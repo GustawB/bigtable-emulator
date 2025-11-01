@@ -334,8 +334,9 @@ class EmulatorTableService final : public btadmin::BigtableTableAdmin::Service {
 
 class DefaultEmulatorServer : public EmulatorServer {
  public:
-  DefaultEmulatorServer(std::string const& host, std::uint16_t port)
+  DefaultEmulatorServer(std::string const& host, std::uint16_t port, bool persist)
       : bound_port_(port),
+        should_persist_(persist),
         cluster_(std::make_shared<Cluster>()),
         bt_service_(cluster_),
         table_service_(cluster_) {
@@ -353,6 +354,7 @@ class DefaultEmulatorServer : public EmulatorServer {
 
  private:
   int bound_port_;
+  bool should_persist_;
   std::shared_ptr<Cluster> cluster_;
   EmulatorService bt_service_;
   EmulatorTableService table_service_;
@@ -361,8 +363,8 @@ class DefaultEmulatorServer : public EmulatorServer {
 };
 
 StatusOr<std::unique_ptr<EmulatorServer>> CreateDefaultEmulatorServer(
-    std::string const& host, std::uint16_t port) {
-  auto* default_emulator_server = new DefaultEmulatorServer(host, port);
+    std::string const& host, std::uint16_t port, bool persist) {
+  auto* default_emulator_server = new DefaultEmulatorServer(host, port, persist);
   if (!default_emulator_server->HasValidServer()) {
     return UnknownError("An unknown error occurred when starting server",
                         GCP_ERROR_INFO()

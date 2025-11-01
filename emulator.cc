@@ -26,15 +26,16 @@ ABSL_FLAG(std::string, host, "localhost",
           "the address to bind to on the local machine");
 ABSL_FLAG(std::uint16_t, port, 8888,
           "the port to bind to on the local machine");
+ABSL_FLAG(bool, persist, false, "whether to persist the database on disk or not");
 
 int main(int argc, char* argv[]) {
   absl::SetProgramUsageMessage(
-      absl::StrCat("Usage: %s -h <host> -p <port>", argv[0]));
+      absl::StrCat("Usage: %s --host=<host> --port=<port> [--persist | --nopersist]", argv[0]));
   absl::ParseCommandLine(argc, argv);
 
   auto maybe_server =
       google::cloud::bigtable::emulator::CreateDefaultEmulatorServer(
-          absl::GetFlag(FLAGS_host), absl::GetFlag(FLAGS_port));
+          absl::GetFlag(FLAGS_host), absl::GetFlag(FLAGS_port), absl::GetFlag(FLAGS_persist));
   if (!maybe_server) {
     std::cerr << "CreateDefaultEmulatorServer() failed. See logs for "
                  "possible reason"
