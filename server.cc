@@ -337,7 +337,7 @@ class DefaultEmulatorServer : public EmulatorServer {
   DefaultEmulatorServer(std::string const& host, std::uint16_t port, bool persist)
       : bound_port_(port),
         should_persist_(persist),
-        cluster_(std::make_shared<Cluster>()),
+        cluster_(std::make_shared<Cluster>(persist)),
         bt_service_(cluster_),
         table_service_(cluster_) {
     builder_.AddListeningPort(host + ":" + std::to_string(port),

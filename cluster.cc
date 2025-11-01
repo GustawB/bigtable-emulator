@@ -92,11 +92,13 @@ StatusOr<btadmin::Table> ApplyView(std::string const& table_name,
 
 }  // anonymous namespace
 
+Cluster::Cluster(const bool should_persist) : should_persist_(should_persist) {}
+
 StatusOr<btadmin::Table> Cluster::CreateTable(std::string const& table_name,
                                               btadmin::Table schema) {
   schema.set_name(table_name);
   std::cout << "Creating table " << table_name << std::endl;
-  auto maybe_table = Table::Create(std::move(schema));
+  auto maybe_table = Table::Create(std::move(schema), should_persist_);
   if (!maybe_table) {
     return maybe_table.status();
   }

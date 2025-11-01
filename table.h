@@ -49,7 +49,8 @@ namespace emulator {
 class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
-      google::bigtable::admin::v2::Table schema);
+      google::bigtable::admin::v2::Table schema,
+      bool should_persist);
 
   google::bigtable::admin::v2::Table GetSchema() const;
 

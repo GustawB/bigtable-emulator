@@ -62,7 +62,8 @@ namespace emulator {
 namespace btadmin = ::google::bigtable::admin::v2;
 
 StatusOr<std::shared_ptr<Table>> Table::Create(
-    google::bigtable::admin::v2::Table schema) {
+    google::bigtable::admin::v2::Table schema,
+    const bool should_persist) {
   std::shared_ptr<Table> res(new Table);
   auto status = res->Construct(std::move(schema));
   if (!status.ok()) {
