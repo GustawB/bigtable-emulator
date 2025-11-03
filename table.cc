@@ -67,7 +67,7 @@ namespace btadmin = ::google::bigtable::admin::v2;
 
 StatusOr<std::shared_ptr<Table>> Table::Create(const std::string& table_name,
     google::bigtable::admin::v2::Table schema, bool should_persist) {
-  if (should_persist)
+  if (!should_persist)
     return DefaultTable::Create(std::move(schema));
   else
     return PersistentTable::Create(table_name, std::move(schema));
@@ -442,6 +442,8 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   if (!parse_result.ok())
     return parse_result;
 
+  std::filesystem::create_directories(std::filesystem::path(table_name).parent_path());
+
   rocksdb::DB* db;
   rocksdb::Options options;
   options.create_if_missing = true;
@@ -454,7 +456,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   rocksdb::Status status = rocksdb::DB::Open(options, "/tmp/" + table_name, column_families, &res->handles_, &db);
   if (!status.ok()) {
     return InternalError(
-      "failed to create new rocksdb instance",
+      "failed to create new rocksdb instance; " + std::string(status.getState()),
       GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString())
       );
   }
@@ -466,6 +468,69 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
 google::bigtable::admin::v2::Table PersistentTable::GetSchema() const {
   std::lock_guard<std::mutex> lock(mu_);
   return schema_;
+}
+
+Status PersistentTable::Update(google::bigtable::admin::v2::Table const& new_schema,
+                  google::protobuf::FieldMask const& to_update) {
+  return Status();
+}
+
+StatusOr<google::bigtable::admin::v2::Table> PersistentTable::ModifyColumnFamilies(
+    google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request) {
+  return Status();
+}
+
+bool PersistentTable::IsDeleteProtected() const {
+  return false;
+}
+
+StatusOr<google::bigtable::v2::CheckAndMutateRowResponse> PersistentTable::CheckAndMutateRow(
+    google::bigtable::v2::CheckAndMutateRowRequest const& request) {
+  return Status();
+}
+
+Status PersistentTable::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
+  return Status();
+}
+
+Status PersistentTable::DoMutationsWithPossibleRollbackLocked(
+  std::string const& row_key,
+  google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
+      mutations) {
+  return Status();
+}
+
+StatusOr<CellStream> PersistentTable::CreateCellStream(
+    std::shared_ptr<StringRangeSet> range_set,
+    absl::optional<google::bigtable::v2::RowFilter>) const {
+  return Status();
+}
+
+Status PersistentTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
+                RowStreamer& row_streamer) const {
+  return Status();
+}
+
+StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+PersistentTable::ReadModifyWriteRow(
+    google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
+  return Status();
+}
+
+Status PersistentTable::SampleRowKeys(
+    double pass_probability,
+    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
+  return Status();
+}
+
+Status PersistentTable::DropRowRange(
+::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
+  return Status();
+}
+
+PersistentTable::~PersistentTable() {
+  // TODO: Think about this
+  delete db_;
 }
 
 bool FilteredTableStream::ApplyFilter(InternalFilter const& internal_filter) {

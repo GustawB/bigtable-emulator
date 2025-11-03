@@ -64,6 +64,17 @@ public:
 
     virtual Status MutateRow(google::bigtable::v2::MutateRowRequest const& request) = 0;
 
+    /**
+     * TODO: Think about this; this is called in the server.cc in some kind of loop.
+     * For the RocksDB, aybe we could do it as one operation, so it would be nice
+     * to instead extract the logic from server to the table. Right now however,
+     * I want everything to compile.
+     */
+    virtual Status DoMutationsWithPossibleRollbackLocked(
+      std::string const& row_key,
+      google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
+          mutations) = 0;
+
     virtual StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
       absl::optional<google::bigtable::v2::RowFilter>) const = 0;
@@ -114,7 +125,7 @@ class DefaultTable : public Table, public std::enable_shared_from_this<DefaultTa
   Status DoMutationsWithPossibleRollbackLocked(
       std::string const& row_key,
       google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
-          mutations) {
+          mutations) override {
     std::lock_guard<std::mutex> lock(mu_);
 
     return DoMutationsWithPossibleRollback(row_key, mutations);
@@ -150,6 +161,9 @@ class DefaultTable : public Table, public std::enable_shared_from_this<DefaultTa
 
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request) override;
+
+
+  ~DefaultTable() override = default;
 
 protected:
     Status Construct(google::bigtable::admin::v2::Table schema);
@@ -191,6 +205,11 @@ public:
 
   Status MutateRow(google::bigtable::v2::MutateRowRequest const& request) override;
 
+    Status DoMutationsWithPossibleRollbackLocked(
+      std::string const& row_key,
+      google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
+          mutations) override;
+
   StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
       absl::optional<google::bigtable::v2::RowFilter>) const override;
@@ -212,7 +231,7 @@ public:
   ~PersistentTable() override;
 
 private:
-    PersistentTable();
+    PersistentTable() = default;
 
     rocksdb::DB* db_;
     std::vector<rocksdb::ColumnFamilyHandle*> handles_;
