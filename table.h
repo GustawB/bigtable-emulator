@@ -16,20 +16,18 @@
 #define GOOGLE_CLOUD_CPP_GOOGLE_CLOUD_BIGTABLE_EMULATOR_TABLE_H
 
 #include "column_family.h"
+#include <rocksdb/db.h>
 #include "filter.h"
 #include "range_set.h"
 #include "row_streamer.h"
 #include "google/cloud/status.h"
 #include "google/cloud/status_or.h"
-#include "absl/types/variant.h"
-#include "google/protobuf/repeated_ptr_field.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/v2/bigtable.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <google/protobuf/field_mask.pb.h>
 #include "absl/types/optional.h"
-#include <grpcpp/support/sync_stream.h>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -46,25 +44,73 @@ namespace bigtable {
 namespace emulator {
 
 /// Objects of this class represent Bigtable tables.
-class Table : public std::enable_shared_from_this<Table> {
+class Table {
+public:
+    static StatusOr<std::shared_ptr<Table>> Create(const std::string& table_name,
+      google::bigtable::admin::v2::Table schema, bool should_persist);
+
+    virtual google::bigtable::admin::v2::Table GetSchema() const = 0;
+
+    virtual Status Update(google::bigtable::admin::v2::Table const& new_schema,
+                google::protobuf::FieldMask const& to_update) = 0;
+
+    virtual StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
+      google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request) = 0;
+
+    virtual bool IsDeleteProtected() const = 0;
+
+    virtual StatusOr<google::bigtable::v2::CheckAndMutateRowResponse> CheckAndMutateRow(
+      google::bigtable::v2::CheckAndMutateRowRequest const& request) = 0;
+
+    virtual Status MutateRow(google::bigtable::v2::MutateRowRequest const& request) = 0;
+
+    virtual StatusOr<CellStream> CreateCellStream(
+      std::shared_ptr<StringRangeSet> range_set,
+      absl::optional<google::bigtable::v2::RowFilter>) const = 0;
+
+    virtual Status ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
+                    RowStreamer& row_streamer) const = 0;
+
+    virtual StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+    ReadModifyWriteRow(
+        google::bigtable::v2::ReadModifyWriteRowRequest const& request) = 0;
+
+    virtual Status SampleRowKeys(
+      double pass_probability,
+      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) = 0;
+
+    virtual Status DropRowRange(
+        ::google::bigtable::admin::v2::DropRowRangeRequest const& request) = 0;
+
+    virtual ~Table() = default;
+
+protected:
+    Status PrepareSchema();
+
+    mutable std::mutex mu_;
+    google::bigtable::admin::v2::Table schema_;
+};
+
+class DefaultTable : public Table, public std::enable_shared_from_this<DefaultTable> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
-      google::bigtable::admin::v2::Table schema,
-      bool should_persist);
+      google::bigtable::admin::v2::Table schema);
 
-  google::bigtable::admin::v2::Table GetSchema() const;
+  google::bigtable::admin::v2::Table GetSchema() const override;
 
   Status Update(google::bigtable::admin::v2::Table const& new_schema,
-                google::protobuf::FieldMask const& to_update);
+                google::protobuf::FieldMask const& to_update) override;
 
   StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
-      google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request);
+      google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request) override;
 
-  bool IsDeleteProtected() const;
+  bool IsDeleteProtected() const override;
 
   StatusOr<google::bigtable::v2::CheckAndMutateRowResponse> CheckAndMutateRow(
-      google::bigtable::v2::CheckAndMutateRowRequest const& request);
-  Status MutateRow(google::bigtable::v2::MutateRowRequest const& request);
+      google::bigtable::v2::CheckAndMutateRowRequest const& request) override;
+
+  Status MutateRow(google::bigtable::v2::MutateRowRequest const& request) override;
+
   Status DoMutationsWithPossibleRollbackLocked(
       std::string const& row_key,
       google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
@@ -76,14 +122,14 @@ class Table : public std::enable_shared_from_this<Table> {
 
   StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
-      absl::optional<google::bigtable::v2::RowFilter>) const;
+      absl::optional<google::bigtable::v2::RowFilter>) const override;
 
   Status ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
-                  RowStreamer& row_streamer) const;
+                  RowStreamer& row_streamer) const override;
 
   StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
   ReadModifyWriteRow(
-      google::bigtable::v2::ReadModifyWriteRowRequest const& request);
+      google::bigtable::v2::ReadModifyWriteRowRequest const& request) override;
 
   std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator begin() {
     return column_families_.begin();
@@ -98,15 +144,18 @@ class Table : public std::enable_shared_from_this<Table> {
 
   Status SampleRowKeys(
       double pass_probability,
-      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer);
+      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) override;
 
-  std::shared_ptr<Table> get() { return shared_from_this(); }
+  std::shared_ptr<DefaultTable> get() { return shared_from_this(); }
 
   Status DropRowRange(
-      ::google::bigtable::admin::v2::DropRowRangeRequest const& request);
+      ::google::bigtable::admin::v2::DropRowRangeRequest const& request) override;
+
+protected:
+    Status Construct(google::bigtable::admin::v2::Table schema);
 
  private:
-  Table() = default;
+  DefaultTable() = default;
   friend class RowSetIterator;
   friend class RowTransaction;
 
@@ -114,15 +163,59 @@ class Table : public std::enable_shared_from_this<Table> {
   StatusOr<std::reference_wrapper<ColumnFamily>> FindColumnFamily(
       MESSAGE const& message) const;
   bool IsDeleteProtectedNoLock() const;
-  Status Construct(google::bigtable::admin::v2::Table schema);
   Status DoMutationsWithPossibleRollback(
       std::string const& row_key,
       google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
           mutations);
 
-  mutable std::mutex mu_;
-  google::bigtable::admin::v2::Table schema_;
+
   std::map<std::string, std::shared_ptr<ColumnFamily>> column_families_;
+};
+
+class PersistentTable : public Table {
+public:
+  static StatusOr<std::shared_ptr<Table>> Create(const std::string& table_name, google::bigtable::admin::v2::Table schema);
+
+  google::bigtable::admin::v2::Table GetSchema() const override;
+
+  Status Update(google::bigtable::admin::v2::Table const& new_schema,
+                google::protobuf::FieldMask const& to_update) override;
+
+  StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
+      google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request) override;
+
+  bool IsDeleteProtected() const override;
+
+  StatusOr<google::bigtable::v2::CheckAndMutateRowResponse> CheckAndMutateRow(
+      google::bigtable::v2::CheckAndMutateRowRequest const& request) override;
+
+  Status MutateRow(google::bigtable::v2::MutateRowRequest const& request) override;
+
+  StatusOr<CellStream> CreateCellStream(
+      std::shared_ptr<StringRangeSet> range_set,
+      absl::optional<google::bigtable::v2::RowFilter>) const override;
+
+  Status ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
+                  RowStreamer& row_streamer) const override;
+
+  StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+  ReadModifyWriteRow(
+      google::bigtable::v2::ReadModifyWriteRowRequest const& request) override;
+
+  Status SampleRowKeys(
+      double pass_probability,
+      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) override;
+
+  Status DropRowRange(
+      ::google::bigtable::admin::v2::DropRowRangeRequest const& request) override;
+
+  ~PersistentTable() override;
+
+private:
+    PersistentTable();
+
+    rocksdb::DB* db_;
+    std::vector<rocksdb::ColumnFamilyHandle*> handles_;
 };
 
 struct RestoreValue {
@@ -140,7 +233,7 @@ struct DeleteValue {
 
 class RowTransaction {
  public:
-  explicit RowTransaction(std::shared_ptr<Table> table,
+  explicit RowTransaction(std::shared_ptr<DefaultTable> table,
                           std::string const& row_key)
       : row_key_(row_key) {
     table_ = std::move(table);
@@ -182,7 +275,7 @@ class RowTransaction {
   void Undo();
 
   bool committed_;
-  std::shared_ptr<Table> table_;
+  std::shared_ptr<DefaultTable> table_;
   std::stack<absl::variant<DeleteValue, RestoreValue>> undo_;
   // row_key_ is initialized from the request proto and therefore it
   // is safe to access it while the mutation request is ongoing. We

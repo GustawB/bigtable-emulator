@@ -120,14 +120,7 @@ class Cluster {
    */
   std::map<std::string, std::shared_ptr<Table>> table_by_name_;
 
-  /**
-   * Holds the information whether all operations all tables
-   * should be performed in-memory, or with disk persistence.
-   * It is const, as it should only be specified at cluster creation.
-   */
-  const bool should_persist_;
-
-  std::shared_ptr<rocksdb::DB> rocksdb_instance_;
+  bool should_persist_;
 };
 
 }  // namespace emulator

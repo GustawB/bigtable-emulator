@@ -59,30 +59,25 @@ namespace cloud {
 namespace bigtable {
 namespace emulator {
 
+namespace {
+
+} // anonymous namespace
+
 namespace btadmin = ::google::bigtable::admin::v2;
 
-StatusOr<std::shared_ptr<Table>> Table::Create(
-    google::bigtable::admin::v2::Table schema,
-    const bool should_persist) {
-  std::shared_ptr<Table> res(new Table);
-  auto status = res->Construct(std::move(schema));
-  if (!status.ok()) {
-    return status;
-  }
-  return res;
+StatusOr<std::shared_ptr<Table>> Table::Create(const std::string& table_name,
+    google::bigtable::admin::v2::Table schema, bool should_persist) {
+  if (should_persist)
+    return DefaultTable::Create(std::move(schema));
+  else
+    return PersistentTable::Create(table_name, std::move(schema));
 }
 
-Status Table::Construct(google::bigtable::admin::v2::Table schema) {
-  // Normally the constructor acts as a synchronization point. We don't have
-  // that luxury here, so we need to make sure that the changes performed in
-  // this member function are reflected in other threads. The simplest way to do
-  // this is the mutex.
-  std::lock_guard<std::mutex> lock(mu_);
-  schema_ = std::move(schema);
+Status Table::PrepareSchema() {
   if (schema_.granularity() ==
       btadmin::Table::TIMESTAMP_GRANULARITY_UNSPECIFIED) {
     schema_.set_granularity(btadmin::Table::MILLIS);
-  }
+      }
   if (schema_.cluster_states_size() > 0) {
     return InvalidArgumentError(
         "`cluster_states` not empty.",
@@ -103,6 +98,28 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema) {
         "`automated_backup_policy` not empty.",
         GCP_ERROR_INFO().WithMetadata("schema", schema_.DebugString()));
   }
+  return Status();
+}
+
+StatusOr<std::shared_ptr<Table>> DefaultTable::Create(google::bigtable::admin::v2::Table schema) {
+  std::shared_ptr<DefaultTable> res(new DefaultTable);
+  auto status = res->Construct(std::move(schema));
+  if (!status.ok()) {
+    return status;
+  }
+  return std::static_pointer_cast<Table>(res);
+}
+
+Status DefaultTable::Construct(google::bigtable::admin::v2::Table schema) {
+  // Normally the constructor acts as a synchronization point. We don't have
+  // that luxury here, so we need to make sure that the changes performed in
+  // this member function are reflected in other threads. The simplest way to do
+  // this is the mutex.
+  std::lock_guard<std::mutex> lock(mu_);
+  schema_ = std::move(schema);
+  Status parse_result = PrepareSchema();
+  if (!parse_result.ok())
+    return parse_result;
 
   for (auto const& column_family_def : schema_.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
@@ -130,7 +147,7 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema) {
 }
 
 // NOLINTBEGIN(readability-function-cognitive-complexity)
-StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
+StatusOr<btadmin::Table> DefaultTable::ModifyColumnFamilies(
     btadmin::ModifyColumnFamiliesRequest const& request) {
   std::cout << "Modify column families: " << request.DebugString() << std::endl;
   std::unique_lock<std::mutex> lock(mu_);
@@ -242,12 +259,12 @@ StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
 }
 // NOLINTEND(readability-function-cognitive-complexity)
 
-google::bigtable::admin::v2::Table Table::GetSchema() const {
+google::bigtable::admin::v2::Table DefaultTable::GetSchema() const {
   std::lock_guard<std::mutex> lock(mu_);
   return schema_;
 }
 
-Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
+Status DefaultTable::Update(google::bigtable::admin::v2::Table const& new_schema,
                      google::protobuf::FieldMask const& to_update) {
   std::cout << "Update schema: " << new_schema.DebugString()
             << " mask: " << to_update.DebugString() << std::endl;
@@ -279,7 +296,7 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
 }
 
 template <typename MESSAGE>
-StatusOr<std::reference_wrapper<ColumnFamily>> Table::FindColumnFamily(
+StatusOr<std::reference_wrapper<ColumnFamily>> DefaultTable::FindColumnFamily(
     MESSAGE const& message) const {
   auto column_family_it = column_families_.find(message.family_name());
   if (column_family_it == column_families_.end()) {
@@ -290,7 +307,7 @@ StatusOr<std::reference_wrapper<ColumnFamily>> Table::FindColumnFamily(
   return std::ref(*column_family_it->second);
 }
 
-Status Table::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
+Status DefaultTable::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
   std::lock_guard<std::mutex> lock(mu_);
 
   return DoMutationsWithPossibleRollback(request.row_key(),
@@ -298,7 +315,7 @@ Status Table::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
 }
 
 // NOLINTBEGIN(readability-function-cognitive-complexity)
-Status Table::DoMutationsWithPossibleRollback(
+Status DefaultTable::DoMutationsWithPossibleRollback(
     std::string const& row_key,
     google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
         mutations) {
@@ -397,7 +414,7 @@ Status Table::DoMutationsWithPossibleRollback(
 }
 // NOLINTEND(readability-function-cognitive-complexity)
 
-StatusOr<CellStream> Table::CreateCellStream(
+StatusOr<CellStream> DefaultTable::CreateCellStream(
     std::shared_ptr<StringRangeSet> range_set,
     absl::optional<google::bigtable::v2::RowFilter> maybe_row_filter) const {
   auto table_stream_ctor = [range_set = std::move(range_set), this] {
@@ -416,6 +433,39 @@ StatusOr<CellStream> Table::CreateCellStream(
   }
 
   return table_stream_ctor();
+}
+
+StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& table_name, google::bigtable::admin::v2::Table schema) {
+  std::shared_ptr<PersistentTable> res(new PersistentTable);
+  res->schema_ = std::move(schema);
+  Status parse_result = res->PrepareSchema();
+  if (!parse_result.ok())
+    return parse_result;
+
+  rocksdb::DB* db;
+  rocksdb::Options options;
+  options.create_if_missing = true;
+  std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
+  for (const auto& cfd : schema.column_families()) {
+    rocksdb::ColumnFamilyOptions opts;
+    column_families.emplace_back(cfd.first, opts);
+  }
+
+  rocksdb::Status status = rocksdb::DB::Open(options, "/tmp/" + table_name, column_families, &res->handles_, &db);
+  if (!status.ok()) {
+    return InternalError(
+      "failed to create new rocksdb instance",
+      GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString())
+      );
+  }
+
+  res->db_ = db;
+  return std::static_pointer_cast<Table>(res);
+}
+
+google::bigtable::admin::v2::Table PersistentTable::GetSchema() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return schema_;
 }
 
 bool FilteredTableStream::ApplyFilter(InternalFilter const& internal_filter) {
@@ -497,7 +547,7 @@ StatusOr<StringRangeSet> CreateStringRangeSet(
 }
 
 StatusOr<google::bigtable::v2::CheckAndMutateRowResponse>
-Table::CheckAndMutateRow(
+DefaultTable::CheckAndMutateRow(
     google::bigtable::v2::CheckAndMutateRowRequest const& request) {
   std::lock_guard<std::mutex> lock(mu_);
 
@@ -568,7 +618,7 @@ Table::CheckAndMutateRow(
   return success_response;
 }
 
-Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
+Status DefaultTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
                        RowStreamer& row_streamer) const {
   std::shared_ptr<StringRangeSet> row_set;
   // We need to check that, not only do we have rows, but that it is
@@ -636,16 +686,16 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
   return Status();
 }
 
-bool Table::IsDeleteProtected() const {
+bool DefaultTable::IsDeleteProtected() const {
   std::lock_guard<std::mutex> lock(mu_);
   return IsDeleteProtectedNoLock();
 }
 
-bool Table::IsDeleteProtectedNoLock() const {
+bool DefaultTable::IsDeleteProtectedNoLock() const {
   return schema_.deletion_protection();
 }
 
-Status Table::SampleRowKeys(
+Status DefaultTable::SampleRowKeys(
     double pass_probability,
     grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
   if (pass_probability <= 0.0) {
@@ -773,7 +823,7 @@ Status Table::SampleRowKeys(
   return Status();
 }
 
-Status Table::DropRowRange(
+Status DefaultTable::DropRowRange(
     ::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
   std::lock_guard<std::mutex> lock(mu_);
 
@@ -823,7 +873,7 @@ Status Table::DropRowRange(
 }
 
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
-Table::ReadModifyWriteRow(
+DefaultTable::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
   if (request.row_key().size() > kMaxRowLen) {
     return InvalidArgumentError(
