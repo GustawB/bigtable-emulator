@@ -442,7 +442,15 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   if (!parse_result.ok())
     return parse_result;
 
-  std::filesystem::create_directories(std::filesystem::path(table_name).parent_path());
+  std::string parent_path = std::filesystem::path("/root/" + table_name).parent_path();
+  std::error_code ec;
+  std::filesystem::create_directories(parent_path, ec);
+  if (ec) {
+    return InternalError(
+      "failed to create directory: " + parent_path + "; Error status: " + ec.message(),
+      GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString())
+      );
+  }
 
   rocksdb::DB* db;
   rocksdb::Options options;
@@ -453,7 +461,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
     column_families.emplace_back(cfd.first, opts);
   }
 
-  rocksdb::Status status = rocksdb::DB::Open(options, "/tmp/" + table_name, column_families, &res->handles_, &db);
+  rocksdb::Status status = rocksdb::DB::Open(options, "/root/" + table_name, column_families, &res->handles_, &db);
   if (!status.ok()) {
     return InternalError(
       "failed to create new rocksdb instance; " + std::string(status.getState()),
