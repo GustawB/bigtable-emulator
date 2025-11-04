@@ -452,16 +452,10 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
       );
   }
 
-  rocksdb::DB* db;
   rocksdb::Options options;
   options.create_if_missing = true;
-  std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
-  for (const auto& cfd : schema.column_families()) {
-    rocksdb::ColumnFamilyOptions opts;
-    column_families.emplace_back(cfd.first, opts);
-  }
-
-  rocksdb::Status status = rocksdb::DB::Open(options, "/root/" + table_name, column_families, &res->handles_, &db);
+  options.create_missing_column_families = true;
+  rocksdb::Status status = rocksdb::DB::Open(options, "/root/" + table_name, &res->db_);
   if (!status.ok()) {
     return InternalError(
       "failed to create new rocksdb instance; " + std::string(status.getState()),
@@ -469,7 +463,20 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
       );
   }
 
-  res->db_ = db;
+  for (const auto& cfd : schema.column_families()) {
+    // TODO: handle opts
+    rocksdb::ColumnFamilyOptions opts;
+    rocksdb::ColumnFamilyHandle* handle;
+    status = res->db_->CreateColumnFamily(opts, cfd.first, &handle);
+    if (!status.ok()) {
+      return InternalError(
+      "failed to create column family " + cfd.first + "; Error status: " + std::string(status.getState()),
+      GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString())
+      );
+    }
+    res->handles_.emplace(cfd.first, handle);
+  }
+
   return std::static_pointer_cast<Table>(res);
 }
 
@@ -534,11 +541,6 @@ Status PersistentTable::SampleRowKeys(
 Status PersistentTable::DropRowRange(
 ::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
   return Status();
-}
-
-PersistentTable::~PersistentTable() {
-  // TODO: Think about this
-  delete db_;
 }
 
 bool FilteredTableStream::ApplyFilter(InternalFilter const& internal_filter) {

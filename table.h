@@ -228,13 +228,13 @@ public:
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request) override;
 
-  ~PersistentTable() override;
+  ~PersistentTable() override = default;
 
 private:
     PersistentTable() = default;
 
-    rocksdb::DB* db_;
-    std::vector<rocksdb::ColumnFamilyHandle*> handles_;
+    std::unique_ptr<rocksdb::DB> db_;
+    std::map<std::string, rocksdb::ColumnFamilyHandle*> handles_;
 };
 
 struct RestoreValue {
