@@ -14,6 +14,7 @@
 
 #include "table.h"
 #include "column_family.h"
+#include "timestamp_comparator.h"
 #include "filter.h"
 #include "limits.h"
 #include "range_set.h"
@@ -455,6 +456,8 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   rocksdb::Options options;
   options.create_if_missing = true;
   options.create_missing_column_families = true;
+  // TODO; will this be cleaned up later?
+  options.comparator = new TimestampComparator();
   rocksdb::Status status = rocksdb::DB::Open(options, "/root/" + table_name, &res->db_);
   if (!status.ok()) {
     return InternalError(
