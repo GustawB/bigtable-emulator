@@ -508,6 +508,65 @@ StatusOr<google::bigtable::v2::CheckAndMutateRowResponse> PersistentTable::Check
 }
 
 Status PersistentTable::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
+  std::lock_guard<std::mutex> lock(mu_);
+  return DoMutations(request.row_key(), request.mutations());
+}
+
+Status PersistentTable::DoMutations(std::string const& row_key,
+  google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
+      mutations) {
+  if (row_key.size() > kMaxRowLen) {
+    return InvalidArgumentError(
+        "The row_key is longer than 4KiB",
+        GCP_ERROR_INFO().WithMetadata("row_key size",
+                                      absl::StrFormat("%zu", row_key.size())));
+  }
+
+  // TODO: Ask Marek what exactly IS a transaction in this context
+  rocksdb::WriteBatch transaction;
+  for (auto const& mutation : mutations) {
+    if (mutation.has_set_cell()) {
+      auto const& set_cell = mutation.set_cell();
+
+      std::chrono::milliseconds timestamp;
+
+      if (set_cell.timestamp_micros() < -1) {
+        return InvalidArgumentError(
+            "Timestamp micros cannot be < -1.",
+            GCP_ERROR_INFO().WithMetadata("mutation", mutation.DebugString()));
+      }
+
+      if (set_cell.timestamp_micros() == -1) {
+        timestamp =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch());
+      } else {
+        timestamp =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::microseconds(set_cell.timestamp_micros()));
+      }
+
+      transaction.Put(handles_[set_cell.column_qualifier()], row_key + ':' + set_cell.column_qualifier(),
+        std::to_string(timestamp.count()), set_cell.value());
+    } else if (mutation.has_add_to_cell()) {
+
+    } else if (mutation.has_merge_to_cell()) {
+      return UnimplementedError(
+          "Unsupported mutation type.",
+          GCP_ERROR_INFO().WithMetadata("mutation", mutation.DebugString()));
+    } else if (mutation.has_delete_from_column()) {
+
+    } else if (mutation.has_delete_from_family()) {
+
+    } else if (mutation.has_delete_from_row()) {
+
+    } else {
+      return UnimplementedError(
+          "Unsupported mutation type.",
+          GCP_ERROR_INFO().WithMetadata("mutation", mutation.DebugString()));
+    }
+  }
+
   return Status();
 }
 
@@ -521,12 +580,18 @@ Status PersistentTable::DoMutationsWithPossibleRollbackLocked(
 StatusOr<CellStream> PersistentTable::CreateCellStream(
     std::shared_ptr<StringRangeSet> range_set,
     absl::optional<google::bigtable::v2::RowFilter>) const {
-  return Status();
-}
+  auto table_stream_ctor = [range_set = std::move(range_set), this] {
+    std::vector<std::unique_ptr<FilteredPersistentColumnFamilyStream>> per_cf_streams;
+    per_cf_streams.reserve(handles_.size());
+    for (auto const& handle : handles_) {
+      per_cf_streams.emplace_back(std::make_unique<FilteredPersistentColumnFamilyStream>(
+        handle.second, handle.first, db_.get()));
+    }
+    return CellStream(
+        std::make_unique<FilteredPersistentTableStream>(std::move(per_cf_streams)));
+  };
 
-Status PersistentTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
-                RowStreamer& row_streamer) const {
-  return Status();
+  return table_stream_ctor();
 }
 
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
@@ -583,6 +648,21 @@ bool FilteredTableStream::ApplyFilter(InternalFilter const& internal_filter) {
 
 std::vector<CellStream> FilteredTableStream::CreateCellStreams(
     std::vector<std::unique_ptr<FilteredColumnFamilyStream>> cf_streams) {
+  std::vector<CellStream> res;
+  res.reserve(cf_streams.size());
+  for (auto& stream : cf_streams) {
+    res.emplace_back(std::move(stream));
+  }
+  return res;
+}
+
+bool FilteredPersistentTableStream::ApplyFilter(InternalFilter const& internal_filter) {
+  //TODO: Implement
+  return true;
+}
+
+std::vector<CellStream> FilteredPersistentTableStream::CreateCellStreams(
+    std::vector<std::unique_ptr<FilteredPersistentColumnFamilyStream>> cf_streams) {
   std::vector<CellStream> res;
   res.reserve(cf_streams.size());
   for (auto& stream : cf_streams) {
@@ -744,6 +824,60 @@ Status DefaultTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& reque
         rows_count++;
         current_row_key = stream->row_key();
       }
+
+      if (rows_count > request.rows_limit()) {
+        break;
+      }
+    }
+
+    if (!row_streamer.Stream(*stream)) {
+      std::cout << "HOW?" << std::endl;
+      return AbortedError("Stream closed by the client.", GCP_ERROR_INFO());
+    }
+  }
+
+  if (!row_streamer.Flush(true)) {
+    std::cout << "Flush failed?" << std::endl;
+    return AbortedError("Stream closed by the client.", GCP_ERROR_INFO());
+  }
+  std::cout << "Print stop" << std::endl;
+  return Status();
+}
+
+Status PersistentTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
+                RowStreamer& row_streamer) const {
+  std::shared_ptr<StringRangeSet> row_set;
+  // We need to check that, not only do we have rows, but that it is
+  // not empty (i.e. at least one of row_range or rows is specified).
+  if (request.has_rows() && (request.rows().row_ranges_size() > 0 ||
+                             request.rows().row_keys_size() > 0)) {
+    auto maybe_row_set = CreateStringRangeSet(request.rows());
+    if (!maybe_row_set) {
+      return maybe_row_set.status();
+    }
+
+    row_set = std::make_shared<StringRangeSet>(*std::move(maybe_row_set));
+  } else {
+    row_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+
+  StatusOr<CellStream> maybe_stream = CreateCellStream(row_set, absl::nullopt);
+  if (!maybe_stream) {
+    return maybe_stream.status();
+  }
+
+  std::int64_t rows_count = 0;
+  absl::optional<std::string> current_row_key;
+
+  CellStream& stream = *maybe_stream;
+  for (; stream; ++stream) {
+    if (request.rows_limit() > 0) {
+      if (!current_row_key.has_value() ||
+          stream->row_key() != current_row_key.value()) {
+        rows_count++;
+        current_row_key = stream->row_key();
+          }
 
       if (rows_count > request.rows_limit()) {
         break;

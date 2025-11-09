@@ -233,6 +233,10 @@ public:
 private:
     PersistentTable() = default;
 
+    Status DoMutations(std::string const& row_key,
+    google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
+        mutations);
+
     std::unique_ptr<rocksdb::DB> db_;
     std::map<std::string, rocksdb::ColumnFamilyHandle*> handles_;
 };
@@ -330,6 +334,20 @@ class FilteredTableStream : public MergeCellStreams {
   static std::vector<CellStream> CreateCellStreams(
       std::vector<std::unique_ptr<FilteredColumnFamilyStream>> cf_streams);
 };
+
+class FilteredPersistentTableStream : public MergeCellStreams {
+public:
+    explicit FilteredPersistentTableStream(
+      std::vector<std::unique_ptr<FilteredPersistentColumnFamilyStream>> cf_streams)
+      : MergeCellStreams(CreateCellStreams(std::move(cf_streams))) {}
+
+    bool ApplyFilter(InternalFilter const& internal_filter) override;
+
+private:
+    static std::vector<CellStream> CreateCellStreams(
+      std::vector<std::unique_ptr<FilteredPersistentColumnFamilyStream>> cf_streams);
+};
+
 
 }  // namespace emulator
 }  // namespace bigtable

@@ -425,6 +425,65 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
   return false;
 }
 
+FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
+  rocksdb::ColumnFamilyHandle *handle, std::string column_family_name , rocksdb::DB* db)
+  : column_family_name_(std::move(column_family_name)), handle_(handle), db_(db) {}
+
+bool FilteredPersistentColumnFamilyStream::ApplyFilter(InternalFilter const& internal_filter) {
+  // TODO: Implement
+  return true;
+}
+
+bool FilteredPersistentColumnFamilyStream::HasValue() const {
+  InitializeIfNeeded();
+  return it_->Valid();
+}
+
+CellView const& FilteredPersistentColumnFamilyStream::Value() const {
+  InitializeIfNeeded();
+  if (!cur_value_) {
+    int64_t milliseconds = std::stoll(it_->timestamp().ToString());
+    cur_value_ = CellView(curr_row_, column_family_name_,
+              curr_col_, std::chrono::milliseconds(milliseconds), it_->value().ToString());
+  }
+  return cur_value_.value();
+}
+
+bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
+  if (is_first_) {
+    is_first_ = false;
+  } else {
+    it_->Next();
+    if (it_->Valid()) {
+      curr_row_ = GetRowName(it_->key().ToString());
+      curr_col_ = GetColumnName(it_->key().ToString());
+    }
+  }
+  return true;
+}
+
+void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
+  if (!initialized_) {
+    it_ = db_->NewIterator(rocksdb::ReadOptions(), handle_);
+    if (it_->Valid()) {
+      curr_row_ = GetRowName(it_->key().ToString());
+      curr_col_ = GetColumnName(it_->key().ToString());
+      initialized_ = true;
+      is_first_ = true;
+    }
+  }
+}
+
+std::string FilteredPersistentColumnFamilyStream::GetRowName(std::string key) const {
+  auto pos = key.find(':');
+  return key.substr(0, pos);
+}
+
+std::string FilteredPersistentColumnFamilyStream::GetColumnName(std::string key) const {
+  auto pos = key.find(':');
+  return key.substr(pos + 1, key.length());
+}
+
 StatusOr<std::shared_ptr<ColumnFamily>>
 ColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type) {

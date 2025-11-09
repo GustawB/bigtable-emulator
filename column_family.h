@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <rocksdb/db.h>
 
 namespace google {
 namespace cloud {
@@ -552,6 +553,33 @@ class FilteredColumnFamilyStream : public AbstractCellStreamImpl {
       cell_it_;
   mutable absl::optional<CellView> cur_value_;
   mutable bool initialized_{false};
+};
+
+class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
+public:
+  FilteredPersistentColumnFamilyStream(rocksdb::ColumnFamilyHandle* handle,
+                                        std::string column_family_name, rocksdb::DB* db);
+  bool ApplyFilter(InternalFilter const& internal_filter) override;
+  bool HasValue() const override;
+  CellView const& Value() const override;
+  bool Next(NextMode mode) override;
+  std::string const& column_family_name() const { return column_family_name_; }
+
+private:
+  void InitializeIfNeeded() const;
+  std::string GetRowName(std::string key) const;
+  std::string GetColumnName(std::string key) const;
+
+  std::string column_family_name_;
+  rocksdb::ColumnFamilyHandle* handle_;
+
+  rocksdb::DB* db_;
+  mutable bool initialized_{false};
+  mutable bool is_first_{false};
+  mutable rocksdb::Iterator* it_;
+  mutable std::string curr_row_;
+  mutable std::string curr_col_;
+  mutable absl::optional<CellView> cur_value_;
 };
 
 }  // namespace emulator
