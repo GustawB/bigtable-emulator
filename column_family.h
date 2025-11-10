@@ -462,6 +462,31 @@ class ColumnFamily {
 };
 
 /**
+ * Convenience wrapper around ColumnFamilyHandle
+ */
+class PersistentColumnFamily {
+public:
+  PersistentColumnFamily() = delete;
+  PersistentColumnFamily(rocksdb::DB* db, const rocksdb::ColumnFamilyOptions& opts, const std::string& name);
+  ~PersistentColumnFamily() = default;
+
+  rocksdb::Status ConstructorStatus() const { return construction_status; }
+  rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_; }
+
+  /**
+   * Drops the column family from the table and removes any references to it.
+   * Using an object of PersistentColumnFamily after calling Drop will cause panics.
+   */
+  rocksdb::Status Drop() const;
+
+private:
+  // Owning  table
+  rocksdb::DB* db_;
+  rocksdb::ColumnFamilyHandle* handle_;
+  rocksdb::Status construction_status;
+};
+
+/**
  * A stream of cells which allows for filtering unwanted ones.
  *
  * In absence of any filters, objects of this class stream the contents of a

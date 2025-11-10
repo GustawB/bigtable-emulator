@@ -469,15 +469,16 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   for (const auto& cfd : schema.column_families()) {
     // TODO: handle opts
     rocksdb::ColumnFamilyOptions opts;
-    rocksdb::ColumnFamilyHandle* handle;
-    status = res->db_->CreateColumnFamily(opts, cfd.first, &handle);
+    std::shared_ptr<PersistentColumnFamily> new_cf = std::make_shared<PersistentColumnFamily>(
+                                                      res->db_.get(), opts, cfd.first);
+    rocksdb::Status status = new_cf->ConstructorStatus();
     if (!status.ok()) {
       return InternalError(
-      "failed to create column family " + cfd.first + "; Error status: " + std::string(status.getState()),
+      "failed to create column family " + cfd.first + "; Error status: " + status.ToString(),
       GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString())
       );
     }
-    res->handles_.emplace(cfd.first, handle);
+    res->handles_.emplace(cfd.first, new_cf);
   }
 
   return std::static_pointer_cast<Table>(res);
@@ -495,7 +496,123 @@ Status PersistentTable::Update(google::bigtable::admin::v2::Table const& new_sch
 
 StatusOr<google::bigtable::admin::v2::Table> PersistentTable::ModifyColumnFamilies(
     google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request) {
-  return Status();
+  std::cout << "Modify persistent column families: " << request.DebugString() << std::endl;
+  std::unique_lock<std::mutex> lock(mu_);
+  auto new_schema = schema_;
+  auto new_handles = handles_;
+  for (auto const& modification : request.modifications()) {
+    if (modification.drop()) {
+      if (schema_.deletion_protection()) {
+        return FailedPreconditionError(
+            "The table has deletion protection.",
+            GCP_ERROR_INFO().WithMetadata("modification",
+                                          modification.DebugString()));
+      }
+      if (new_handles.find(modification.id()) == new_handles.end()) {
+        return NotFoundError("No such column family.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+      rocksdb::Status res = new_handles[modification.id()]->Drop();
+      if (!res.ok()) {
+        return InternalError("Failed to drop a column family: " + res.ToString(),
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+      new_handles.erase(modification.id());
+      if (new_schema.mutable_column_families()->erase(modification.id()) == 0) {
+        return InternalError("Column family with no schema.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+    } else if (modification.has_update()) {
+      auto& cfs = *new_schema.mutable_column_families();
+      auto cf_it = cfs.find(modification.id());
+      if (cf_it == cfs.end()) {
+        return NotFoundError("No such column family.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+
+      using google::protobuf::util::FieldMaskUtil;
+
+      using google::protobuf::util::FieldMaskUtil;
+      google::protobuf::FieldMask effective_mask;
+      if (modification.has_update_mask()) {
+        effective_mask = modification.update_mask();
+        if (!FieldMaskUtil::IsValidFieldMask<
+                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
+          return InvalidArgumentError(
+              "Update mask is invalid.",
+              GCP_ERROR_INFO().WithMetadata("modification",
+                                            modification.DebugString()));
+        }
+      } else {
+        FieldMaskUtil::FromString("gc_rule", &effective_mask);
+        if (!FieldMaskUtil::IsValidFieldMask<
+                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
+          return InternalError("Default update mask is invalid.",
+                               GCP_ERROR_INFO().WithMetadata(
+                                   "mask", effective_mask.DebugString()));
+        }
+      }
+
+      // Disallow the modification of the type of data stored in the
+      // column family (the aggregate type -- which is currently the
+      // only supported type -- can always be set during column family
+      // creation).
+      if (FieldMaskUtil::IsPathInFieldMask("value_type", effective_mask)) {
+        return InvalidArgumentError(
+            "The value_type cannot be changed after column family creation",
+            GCP_ERROR_INFO().WithMetadata("mask",
+                                          effective_mask.DebugString()));
+      }
+
+      FieldMaskUtil::MergeMessageTo(modification.update(), effective_mask,
+                                    FieldMaskUtil::MergeOptions(),
+                                    &(cf_it->second));
+    } else if (modification.has_create()) {
+      if (new_handles.find(modification.id()) != new_handles.end()) {
+        return AlreadyExistsError(
+            "Column family already exists.",
+            GCP_ERROR_INFO().WithMetadata("modification",
+                                          modification.DebugString()));
+      }
+      std::shared_ptr<PersistentColumnFamily> cf;
+      // Have we been asked to create an aggregate column family?
+      if (modification.create().has_value_type()) {
+        return InternalError("Unimplemented operation",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      } else {
+        cf = std::make_shared<PersistentColumnFamily>(db_.get(),
+            rocksdb::ColumnFamilyOptions(), modification.id());
+        rocksdb::Status res = cf->ConstructorStatus();
+        if (!res.ok()) {
+          return InternalError("Failed to create new column family; " + res.ToString(),
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+        }
+      }
+      if (!new_schema.mutable_column_families()
+               ->emplace(modification.id(), modification.create())
+               .second) {
+        return InternalError("Column family with schema but no data.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+    } else {
+      return UnimplementedError(
+          "Unsupported modification.",
+          GCP_ERROR_INFO().WithMetadata("modification",
+                                        modification.DebugString()));
+    }
+  }
+  // Defer destroying potentially large objects to after releasing the lock.
+  handles_.swap(new_handles);
+  schema_ = new_schema;
+  lock.unlock();
+  return new_schema;
 }
 
 bool PersistentTable::IsDeleteProtected() const {
@@ -546,8 +663,14 @@ Status PersistentTable::DoMutations(std::string const& row_key,
                 std::chrono::microseconds(set_cell.timestamp_micros()));
       }
 
-      transaction.Put(handles_[set_cell.column_qualifier()], row_key + ':' + set_cell.column_qualifier(),
-        std::to_string(timestamp.count()), set_cell.value());
+      rocksdb::Status res = transaction.Put(handles_[set_cell.family_name()]->ToRawPtr(),
+                      row_key + ':' + set_cell.column_qualifier(),
+                        std::to_string(timestamp.count()), set_cell.value());
+      if (!res.ok()) {
+        return InternalError("Failed to put write into the transaction; " + res.ToString(),
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "mutation", mutation.DebugString()));
+      }
     } else if (mutation.has_add_to_cell()) {
 
     } else if (mutation.has_merge_to_cell()) {
@@ -567,6 +690,12 @@ Status PersistentTable::DoMutations(std::string const& row_key,
     }
   }
 
+  rocksdb::Status res = db_->Write(rocksdb::WriteOptions(), &transaction);
+  if (res.ok()) {
+    return InternalError("Failed to write the the transaction; " + res.ToString(),
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "mutation", res.ToString()));
+  }
   return Status();
 }
 
@@ -585,7 +714,7 @@ StatusOr<CellStream> PersistentTable::CreateCellStream(
     per_cf_streams.reserve(handles_.size());
     for (auto const& handle : handles_) {
       per_cf_streams.emplace_back(std::make_unique<FilteredPersistentColumnFamilyStream>(
-        handle.second, handle.first, db_.get()));
+        handle.second->ToRawPtr(), handle.first, db_.get()));
     }
     return CellStream(
         std::make_unique<FilteredPersistentTableStream>(std::move(per_cf_streams)));

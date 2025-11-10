@@ -304,6 +304,19 @@ absl::optional<Cell> ColumnFamily::DeleteTimeStamp(
   return ret;
 }
 
+PersistentColumnFamily::PersistentColumnFamily(rocksdb::DB *db,
+  const rocksdb::ColumnFamilyOptions &opts, const std::string &name) : db_(db) {
+  construction_status = db_->CreateColumnFamily(opts, name, &handle_);
+}
+
+rocksdb::Status PersistentColumnFamily::Drop() const {
+  // TODO; think how to exactly do this
+  rocksdb::Status res = db_->DropColumnFamily(handle_);
+  if (!res.ok()) return res;
+  delete handle_;
+  return rocksdb::Status();
+}
+
 class FilteredColumnFamilyStream::FilterApply {
  public:
   explicit FilterApply(FilteredColumnFamilyStream& parent) : parent_(parent) {}

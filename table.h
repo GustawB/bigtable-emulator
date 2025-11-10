@@ -238,7 +238,7 @@ private:
         mutations);
 
     std::unique_ptr<rocksdb::DB> db_;
-    std::map<std::string, rocksdb::ColumnFamilyHandle*> handles_;
+    std::map<std::string, std::shared_ptr<PersistentColumnFamily>> handles_;
 };
 
 struct RestoreValue {
