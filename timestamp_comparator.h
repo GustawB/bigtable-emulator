@@ -9,6 +9,8 @@ namespace cloud {
 namespace bigtable {
 namespace emulator {
 
+std::string TimestampToHexString(int64_t timestamp);
+
 class TimestampComparator : public rocksdb::Comparator {
 public:
   TimestampComparator();

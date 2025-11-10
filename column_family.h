@@ -467,7 +467,7 @@ class ColumnFamily {
 class PersistentColumnFamily {
 public:
   PersistentColumnFamily() = delete;
-  PersistentColumnFamily(rocksdb::DB* db, const rocksdb::ColumnFamilyOptions& opts, const std::string& name);
+  PersistentColumnFamily(rocksdb::DB* db, rocksdb::ColumnFamilyOptions opts, const std::string& name);
   ~PersistentColumnFamily() = default;
 
   rocksdb::Status ConstructorStatus() const { return construction_status; }
@@ -604,7 +604,10 @@ private:
   mutable rocksdb::Iterator* it_;
   mutable std::string curr_row_;
   mutable std::string curr_col_;
+  mutable std::string curr_value_string_;
   mutable absl::optional<CellView> cur_value_;
+  mutable std::string curr_timestamp_string_;
+  mutable rocksdb::Slice curr_timestamp_;
 };
 
 }  // namespace emulator

@@ -457,7 +457,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   options.create_if_missing = true;
   options.create_missing_column_families = true;
   // TODO; will this be cleaned up later?
-  //options.comparator = new TimestampComparator();
+  options.comparator = new TimestampComparator();
   rocksdb::Status status = rocksdb::DB::Open(options, "/root/" + table_name, &res->db_);
   if (!status.ok()) {
     return InternalError(
@@ -641,7 +641,7 @@ Status PersistentTable::DoMutations(std::string const& row_key,
   }
 
   // TODO: Ask Marek what exactly IS a transaction in this context
-  rocksdb::WriteBatch transaction;
+  rocksdb::WriteBatch transaction {0, 0, 0, 16};
   for (auto const& mutation : mutations) {
     if (mutation.has_set_cell()) {
       auto const& set_cell = mutation.set_cell();
@@ -670,7 +670,8 @@ Status PersistentTable::DoMutations(std::string const& row_key,
                                  "mutation", mutation.DebugString()));
       }
       rocksdb::Status res = transaction.Put(handles_[set_cell.family_name()]->ToRawPtr(),
-                      row_key + ':' + set_cell.column_qualifier(), set_cell.value());
+                      row_key + ':' + set_cell.column_qualifier(),
+                      TimestampToHexString(timestamp.count()), set_cell.value());
       if (!res.ok()) {
         return InternalError("Failed to put write into the transaction; " + res.ToString(),
                              GCP_ERROR_INFO().WithMetadata(
@@ -697,9 +698,9 @@ Status PersistentTable::DoMutations(std::string const& row_key,
 
   rocksdb::Status res = db_->Write(rocksdb::WriteOptions(), &transaction);
   if (!res.ok()) {
-    return InternalError("Failed to write the transaction; " + res.ToString(),
+    return InternalError("Failed to write the transaction",
                              GCP_ERROR_INFO().WithMetadata(
-                                 "mutation", res.ToString()));
+                                 "mutation", "dss"));
   }
   return Status();
 }
@@ -1017,7 +1018,6 @@ Status PersistentTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& re
         break;
       }
     }
-
     if (!row_streamer.Stream(*stream)) {
       std::cout << "HOW?" << std::endl;
       return AbortedError("Stream closed by the client.", GCP_ERROR_INFO());

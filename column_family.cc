@@ -34,6 +34,8 @@
 #include <utility>
 #include <vector>
 
+#include "timestamp_comparator.h"
+
 namespace google {
 namespace cloud {
 namespace bigtable {
@@ -305,7 +307,8 @@ absl::optional<Cell> ColumnFamily::DeleteTimeStamp(
 }
 
 PersistentColumnFamily::PersistentColumnFamily(rocksdb::DB *db,
-  const rocksdb::ColumnFamilyOptions &opts, const std::string &name) : db_(db) {
+  rocksdb::ColumnFamilyOptions opts, const std::string &name) : db_(db) {
+  opts.comparator = new TimestampComparator();
   construction_status = db_->CreateColumnFamily(opts, name, &handle_);
 }
 
@@ -455,14 +458,17 @@ bool FilteredPersistentColumnFamilyStream::HasValue() const {
 CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
   if (!cur_value_) {
-    int64_t milliseconds = std::stoll(it_->timestamp().ToString());
+    curr_value_string_ = it_->value().ToString();
+    int64_t milliseconds = std::stoll(it_->timestamp().ToString(), nullptr, 16);
     cur_value_ = CellView(curr_row_, column_family_name_,
-              curr_col_, std::chrono::milliseconds(milliseconds), it_->value().ToString());
+              curr_col_, std::chrono::milliseconds(milliseconds), curr_value_string_);
   }
   return cur_value_.value();
 }
 
 bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
+  InitializeIfNeeded();
+  cur_value_.reset();
   if (is_first_) {
     is_first_ = false;
   } else {
@@ -477,13 +483,21 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
 
 void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
   if (!initialized_) {
-    it_ = db_->NewIterator(rocksdb::ReadOptions(), handle_);
+    rocksdb::ReadOptions opts;
+    std::chrono::milliseconds timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch());
+    curr_timestamp_string_ = TimestampToHexString(timestamp.count());
+    curr_timestamp_ = curr_timestamp_string_;
+
+    opts.timestamp = &curr_timestamp_;
+    it_ = db_->NewIterator(opts, handle_);
+    it_->SeekToFirst();
     if (it_->Valid()) {
       curr_row_ = GetRowName(it_->key().ToString());
       curr_col_ = GetColumnName(it_->key().ToString());
       initialized_ = true;
       is_first_ = true;
-    }
+    } else {std::cout << it_->status().ToString() << std::endl;}
   }
 }
 
