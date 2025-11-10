@@ -469,20 +469,18 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
 bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   InitializeIfNeeded();
   cur_value_.reset();
-  if (is_first_) {
-    is_first_ = false;
-  } else {
-    it_->Next();
-    if (it_->Valid()) {
-      curr_row_ = GetRowName(it_->key().ToString());
-      curr_col_ = GetColumnName(it_->key().ToString());
-    }
+  it_->Next();
+  if (it_->Valid()) {
+    curr_row_ = GetRowName(it_->key().ToString());
+    curr_col_ = GetColumnName(it_->key().ToString());
   }
   return true;
 }
 
 void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
   if (!initialized_) {
+    initialized_ = true;
+
     rocksdb::ReadOptions opts;
     std::chrono::milliseconds timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch());
@@ -495,8 +493,6 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     if (it_->Valid()) {
       curr_row_ = GetRowName(it_->key().ToString());
       curr_col_ = GetColumnName(it_->key().ToString());
-      initialized_ = true;
-      is_first_ = true;
     } else {std::cout << it_->status().ToString() << std::endl;}
   }
 }

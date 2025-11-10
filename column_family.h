@@ -600,7 +600,6 @@ private:
 
   rocksdb::DB* db_;
   mutable bool initialized_{false};
-  mutable bool is_first_{false};
   mutable rocksdb::Iterator* it_;
   mutable std::string curr_row_;
   mutable std::string curr_col_;
