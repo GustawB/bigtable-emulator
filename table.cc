@@ -457,7 +457,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(const std::string& tabl
   options.create_if_missing = true;
   options.create_missing_column_families = true;
   // TODO; will this be cleaned up later?
-  options.comparator = new TimestampComparator();
+  //options.comparator = new TimestampComparator();
   rocksdb::Status status = rocksdb::DB::Open(options, "/root/" + table_name, &res->db_);
   if (!status.ok()) {
     return InternalError(
@@ -594,6 +594,7 @@ StatusOr<google::bigtable::admin::v2::Table> PersistentTable::ModifyColumnFamili
                                  "modification", modification.DebugString()));
         }
       }
+      new_handles.emplace(modification.id(), cf);
       if (!new_schema.mutable_column_families()
                ->emplace(modification.id(), modification.create())
                .second) {
@@ -663,9 +664,13 @@ Status PersistentTable::DoMutations(std::string const& row_key,
                 std::chrono::microseconds(set_cell.timestamp_micros()));
       }
 
+      if (handles_.find(set_cell.family_name()) == handles_.end()) {
+        return InternalError("Column family " + set_cell.family_name() + " does not exist",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "mutation", mutation.DebugString()));
+      }
       rocksdb::Status res = transaction.Put(handles_[set_cell.family_name()]->ToRawPtr(),
-                      row_key + ':' + set_cell.column_qualifier(),
-                        std::to_string(timestamp.count()), set_cell.value());
+                      row_key + ':' + set_cell.column_qualifier(), set_cell.value());
       if (!res.ok()) {
         return InternalError("Failed to put write into the transaction; " + res.ToString(),
                              GCP_ERROR_INFO().WithMetadata(
@@ -691,8 +696,8 @@ Status PersistentTable::DoMutations(std::string const& row_key,
   }
 
   rocksdb::Status res = db_->Write(rocksdb::WriteOptions(), &transaction);
-  if (res.ok()) {
-    return InternalError("Failed to write the the transaction; " + res.ToString(),
+  if (!res.ok()) {
+    return InternalError("Failed to write the transaction; " + res.ToString(),
                              GCP_ERROR_INFO().WithMetadata(
                                  "mutation", res.ToString()));
   }
