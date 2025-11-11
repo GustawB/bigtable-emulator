@@ -665,6 +665,8 @@ Status PersistentTable::DoMutations(std::string const& row_key,
                              GCP_ERROR_INFO().WithMetadata(
                                  "mutation", mutation.DebugString()));
       }
+      std::cout << "Writing to column family: " << set_cell.family_name() << "; row key: " << row_key <<
+        "; column: " << set_cell.column_qualifier() << "; value: " << set_cell.value() << std::endl;
       rocksdb::Status res = transaction.Put(handles_[set_cell.family_name()]->ToRawPtr(),
                       row_key + ':' + set_cell.column_qualifier(),
                       TimestampToHexString(timestamp.count()), set_cell.value());
@@ -975,8 +977,14 @@ Status DefaultTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& reque
   return Status();
 }
 
+/**
+ * At the end, it will be probably almost identical to ReadRows
+ * from DefaultTable, and so it should be refactore.
+ * Right now though, there are still a few things to be taken care of
+ * (locks, filters), so for now let it stay this way.
+ */
 Status PersistentTable::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
-                RowStreamer& row_streamer) const {
+                                 RowStreamer& row_streamer) const {
   std::shared_ptr<StringRangeSet> row_set;
   // We need to check that, not only do we have rows, but that it is
   // not empty (i.e. at least one of row_range or rows is specified).
