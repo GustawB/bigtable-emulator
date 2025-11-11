@@ -60,10 +60,6 @@ namespace cloud {
 namespace bigtable {
 namespace emulator {
 
-namespace {
-
-} // anonymous namespace
-
 namespace btadmin = ::google::bigtable::admin::v2;
 
 StatusOr<std::shared_ptr<Table>> Table::Create(const std::string& table_name,

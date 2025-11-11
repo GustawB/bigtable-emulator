@@ -39,5 +39,4 @@ bigtable_emulator_common_srcs = [
     "table.cc",
     "test_util.cc",
     "to_grpc_status.cc",
-    "timestamp_comparator.cc",
 ]
