@@ -33,6 +33,8 @@
 #include <string>
 #include <vector>
 #include <rocksdb/db.h>
+#include <rocksdb/utilities/transaction.h>
+#include <rocksdb/utilities/transaction_db.h>
 
 namespace google {
 namespace cloud {
@@ -467,11 +469,17 @@ class ColumnFamily {
 class PersistentColumnFamily {
 public:
   PersistentColumnFamily() = delete;
-  PersistentColumnFamily(rocksdb::DB* db, rocksdb::ColumnFamilyOptions opts, const std::string& name);
+  PersistentColumnFamily(rocksdb::DB* db_, rocksdb::ColumnFamilyOptions opts, const std::string& name);
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> ConstructAggregateColumnFamily(
+      google::bigtable::admin::v2::Type value_type, rocksdb::DB* db_, const std::string& name);
   ~PersistentColumnFamily() = default;
 
-  rocksdb::Status ConstructorStatus() const { return construction_status; }
+  rocksdb::Status ConstructorStatus() const { return construction_status_; }
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_; }
+
+  absl::optional<google::bigtable::admin::v2::Type> GetValueType() {
+    return value_type_;
+  };
 
   /**
    * Drops the column family from the table and removes any references to it.
@@ -483,7 +491,8 @@ private:
   // Owning  table
   rocksdb::DB* db_;
   rocksdb::ColumnFamilyHandle* handle_;
-  rocksdb::Status construction_status;
+  rocksdb::Status construction_status_;
+  absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
 };
 
 /**
@@ -583,7 +592,7 @@ class FilteredColumnFamilyStream : public AbstractCellStreamImpl {
 class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
 public:
   FilteredPersistentColumnFamilyStream(rocksdb::ColumnFamilyHandle* handle,
-                                        std::string column_family_name, rocksdb::DB* db);
+                                        std::string column_family_name, rocksdb::DB* db_);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;

@@ -16,6 +16,7 @@
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
+#include "merge_operator.h"
 #include "google/cloud/internal/big_endian.h"
 #include "google/cloud/internal/make_status.h"
 #include "google/cloud/status_or.h"
@@ -309,7 +310,7 @@ absl::optional<Cell> ColumnFamily::DeleteTimeStamp(
 PersistentColumnFamily::PersistentColumnFamily(rocksdb::DB *db,
   rocksdb::ColumnFamilyOptions opts, const std::string &name) : db_(db) {
   opts.comparator = new TimestampComparator();
-  construction_status = db_->CreateColumnFamily(opts, name, &handle_);
+  construction_status_ = db_->CreateColumnFamily(opts, name, &handle_);
 }
 
 rocksdb::Status PersistentColumnFamily::Drop() const {
@@ -534,6 +535,48 @@ ColumnFamily::ConstructAggregateColumnFamily(
 
     cf->value_type_ = std::move(value_type);
 
+    return cf;
+  }
+
+  return InvalidArgumentError(
+      "no aggregate type set in the supplied value_type",
+      GCP_ERROR_INFO().WithMetadata("supplied value type",
+                                    value_type.DebugString()));
+}
+
+StatusOr<std::shared_ptr<PersistentColumnFamily>>
+PersistentColumnFamily::ConstructAggregateColumnFamily(
+    google::bigtable::admin::v2::Type value_type, rocksdb::DB* db_, const std::string& name) {
+  rocksdb::ColumnFamilyOptions opts;
+  if (value_type.has_aggregate_type()) {
+    auto const& aggregate_type = value_type.aggregate_type();
+    switch (aggregate_type.aggregator_case()) {
+      case google::bigtable::admin::v2::Type::Aggregate::kSum:
+        opts.merge_operator.reset(new SumUpdateCellBEInt64);
+        break;
+      case google::bigtable::admin::v2::Type::Aggregate::kMin:
+        opts.merge_operator.reset(new MinUpdateCellBEInt64);
+        break;
+      case google::bigtable::admin::v2::Type::Aggregate::kMax:
+        opts.merge_operator.reset(new MaxUpdateCellBEInt64);
+        break;
+      default:
+        return InvalidArgumentError(
+            "unsupported aggregation type",
+            GCP_ERROR_INFO().WithMetadata(
+                "aggregation case",
+                absl::StrFormat("%d", aggregate_type.aggregator_case())));
+    }
+
+    auto cf = std::make_shared<PersistentColumnFamily>(db_, opts, name);
+    if (!cf->ConstructorStatus().ok()) {
+      return InternalError(
+      "Failed to create aggregate persistent column family: " + cf->ConstructorStatus().ToString(),
+      GCP_ERROR_INFO().WithMetadata("supplied value type",
+                                    value_type.DebugString()));
+    }
+
+    cf->value_type_ = std::move(value_type);
     return cf;
   }
 
