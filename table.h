@@ -47,7 +47,7 @@ namespace emulator {
 class Table {
 public:
     static StatusOr<std::shared_ptr<Table>> Create(const std::string& table_name,
-      google::bigtable::admin::v2::Table schema, bool should_persist);
+      google::bigtable::admin::v2::Table schema, bool should_persist, std::string const& data_root = "/root");
 
     virtual google::bigtable::admin::v2::Table GetSchema() const = 0;
 
@@ -102,7 +102,7 @@ protected:
     google::bigtable::admin::v2::Table schema_;
 };
 
-class DefaultTable : public Table, public std::enable_shared_from_this<DefaultTable> {
+class InMemoryTable : public Table, public std::enable_shared_from_this<InMemoryTable> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       google::bigtable::admin::v2::Table schema);
@@ -157,19 +157,19 @@ class DefaultTable : public Table, public std::enable_shared_from_this<DefaultTa
       double pass_probability,
       grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) override;
 
-  std::shared_ptr<DefaultTable> get() { return shared_from_this(); }
+  std::shared_ptr<InMemoryTable> get() { return shared_from_this(); }
 
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request) override;
 
 
-  ~DefaultTable() override = default;
+  ~InMemoryTable() override = default;
 
 protected:
     Status Construct(google::bigtable::admin::v2::Table schema);
 
  private:
-  DefaultTable() = default;
+  InMemoryTable() = default;
   friend class RowSetIterator;
   friend class RowTransaction;
 
@@ -188,7 +188,8 @@ protected:
 
 class PersistentTable : public Table {
 public:
-  static StatusOr<std::shared_ptr<Table>> Create(const std::string& table_name, google::bigtable::admin::v2::Table schema);
+  static StatusOr<std::shared_ptr<Table>> Create(const std::string& data_root,
+      const std::string& table_name, google::bigtable::admin::v2::Table schema);
 
   google::bigtable::admin::v2::Table GetSchema() const override;
 
@@ -237,7 +238,7 @@ private:
     google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
         mutations);
 
-    std::unique_ptr<rocksdb::DB> db_;
+    std::shared_ptr<rocksdb::DB> db_;
     std::map<std::string, std::shared_ptr<PersistentColumnFamily>> handles_;
 };
 
@@ -256,7 +257,7 @@ struct DeleteValue {
 
 class RowTransaction {
  public:
-  explicit RowTransaction(std::shared_ptr<DefaultTable> table,
+  explicit RowTransaction(std::shared_ptr<InMemoryTable> table,
                           std::string const& row_key)
       : row_key_(row_key) {
     table_ = std::move(table);
@@ -298,7 +299,7 @@ class RowTransaction {
   void Undo();
 
   bool committed_;
-  std::shared_ptr<DefaultTable> table_;
+  std::shared_ptr<InMemoryTable> table_;
   std::stack<absl::variant<DeleteValue, RestoreValue>> undo_;
   // row_key_ is initialized from the request proto and therefore it
   // is safe to access it while the mutation request is ongoing. We

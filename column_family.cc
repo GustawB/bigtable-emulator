@@ -306,18 +306,28 @@ absl::optional<Cell> ColumnFamily::DeleteTimeStamp(
   return ret;
 }
 
-PersistentColumnFamily::PersistentColumnFamily(rocksdb::DB *db,
-  rocksdb::ColumnFamilyOptions opts, const std::string &name) : db_(db) {
+StatusOr<std::shared_ptr<PersistentColumnFamily>> PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
+  rocksdb::ColumnFamilyOptions opts, const std::string &name) {
+  PersistentColumnFamily pcf;
+  pcf.db_ = std::move(db);
   opts.comparator = new TimestampComparator();
-  construction_status = db_->CreateColumnFamily(opts, name, &handle_);
-}
 
-rocksdb::Status PersistentColumnFamily::Drop() const {
-  // TODO; think how to exactly do this
-  rocksdb::Status res = db_->DropColumnFamily(handle_);
-  if (!res.ok()) return res;
-  delete handle_;
-  return rocksdb::Status();
+  rocksdb::ColumnFamilyHandle* raw = nullptr;
+  auto status = db->CreateColumnFamily(opts, name, &raw);
+  if (!status.ok()) {
+    return InternalError(
+      "Failed to create Column Family: " + status.ToString(),
+      GCP_ERROR_INFO().WithMetadata("cf name",name));
+  }
+
+  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(raw,
+    [&pcf](rocksdb::ColumnFamilyHandle* h) {
+      // TODO; think how to exactly do this
+      rocksdb::Status res = pcf.db_->DropColumnFamily(h);
+      delete h;
+    });
+
+  return std::make_shared<PersistentColumnFamily>(pcf);
 }
 
 class FilteredColumnFamilyStream::FilterApply {
@@ -442,8 +452,9 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
 }
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
-  rocksdb::ColumnFamilyHandle *handle, std::string column_family_name , rocksdb::DB* db)
-  : column_family_name_(std::move(column_family_name)), handle_(handle), db_(db) {}
+  std::shared_ptr<rocksdb::ColumnFamilyHandle> handle, std::string const& column_family_name ,
+  std::shared_ptr<rocksdb::DB> db) : column_family_name_(column_family_name), handle_(std::move(handle)),
+  db_(std::move(db)) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(InternalFilter const& internal_filter) {
   // TODO: Implement
@@ -469,12 +480,17 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
 bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   InitializeIfNeeded();
   cur_value_.reset();
-  it_->Next();
-  if (it_->Valid()) {
-    curr_row_ = GetRowName(it_->key().ToString());
-    curr_col_ = GetColumnName(it_->key().ToString());
+  if (mode == NextMode::kCell) {
+    it_->Next();
+    if (it_->Valid()) {
+      curr_row_ = GetRowName(it_->key().ToString());
+      curr_col_ = GetColumnName(it_->key().ToString());
+    }
+    return true;
+  } else {
+    //TODO: Implement other types of iterator
+    return false;
   }
-  return true;
 }
 
 void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
@@ -488,22 +504,25 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     curr_timestamp_ = curr_timestamp_string_;
 
     opts.timestamp = &curr_timestamp_;
-    it_ = db_->NewIterator(opts, handle_);
+    it_ = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();
     if (it_->Valid()) {
       curr_row_ = GetRowName(it_->key().ToString());
       curr_col_ = GetColumnName(it_->key().ToString());
-    } else {std::cout << it_->status().ToString() << std::endl;}
+    } else {
+      // TODO: remove debug print
+      std::cout << it_->status().ToString() << std::endl;
+    }
   }
 }
 
-std::string FilteredPersistentColumnFamilyStream::GetRowName(std::string key) const {
-  auto pos = key.find(':');
+std::string FilteredPersistentColumnFamilyStream::GetRowName(std::string const& key) const {
+  auto pos = key.find(row_col_separator_);
   return key.substr(0, pos);
 }
 
-std::string FilteredPersistentColumnFamilyStream::GetColumnName(std::string key) const {
-  auto pos = key.find(':');
+std::string FilteredPersistentColumnFamilyStream::GetColumnName(std::string const& key) const {
+  auto pos = key.find(row_col_separator_);
   return key.substr(pos + 1, key.length());
 }
 
