@@ -519,6 +519,8 @@ StatusOr<google::bigtable::admin::v2::Table> PersistentTable::ModifyColumnFamili
                              GCP_ERROR_INFO().WithMetadata(
                                  "modification", modification.DebugString()));
       }
+
+      // TODO: This needs to be done atomically
       rocksdb::Status res = new_handles[modification.id()]->Drop();
       if (!res.ok()) {
         return InternalError("Failed to drop a column family: " + res.ToString(),

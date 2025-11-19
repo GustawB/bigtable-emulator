@@ -238,7 +238,13 @@ private:
     google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
         mutations);
 
-    std::shared_ptr<rocksdb::DB> db_;
+  /**
+   * To close a rocksdb database, in the simplest case it is enough to delete a pointer to it
+   * (https://github.com/facebook/rocksdb/wiki/basic-operations#closing-a-database,
+   * https://github.com/facebook/rocksdb/wiki/basic-operations#concurrency).
+   * We also don't need to care about locking here, as rocksdb has internal synchronization.
+   */
+  std::shared_ptr<rocksdb::DB> db_;
     std::map<std::string, std::shared_ptr<PersistentColumnFamily>> handles_;
 };
 
