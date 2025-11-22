@@ -4,6 +4,10 @@ This file contains a basic design of adding persistence to the emulator.
 
 Persistence itself will be done using rocksdb.
 
+The general idea is to reuse as much of the existing code as possible. This means that for classes such as
+Table, ColumnFamily, RowTransaction etc. there should be a similar class wrapping rocksdb functionality.
+This way, functions responsible for handling gRPC requests on the server side should not change much.
+
 As there is no concept of a table in rocksdb, each table in the emulator
 will be represented by a separate database instance. This way, it will be easier to
 use multiple tables, and each one of them will have a separate directory in the file system.
