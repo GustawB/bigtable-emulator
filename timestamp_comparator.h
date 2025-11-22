@@ -10,27 +10,21 @@ namespace google {
 namespace cloud {
 namespace bigtable {
 namespace emulator {
-
-inline std::string TimestampToHexString(int64_t timestamp) {
-  std::stringstream stream;
-  stream << std::setfill ('0') << std::setw(sizeof(int64_t)*2)
-       << std::hex << timestamp;
-  return stream.str();
-}
-
 class TimestampComparator : public rocksdb::Comparator {
 public:
   TimestampComparator()  : Comparator(2 * sizeof(int64_t)),
-    min_(TimestampToHexString(INT64_MIN)), max_(TimestampToHexString(INT64_MAX)) {}
+    min_(absl::StrFormat("%016x", INT64_MAX)), max_(absl::StrFormat("%016x", 0)) {}
 
   const char* Name() const override {
       return "TimestampComparator";
   }
 
   int Compare(const rocksdb::Slice& a, const rocksdb::Slice& b) const override {
-      if (a.ToString() < b.ToString()) { return -1; }
-      if (a.ToString() > b.ToString()) { return 1; }
-      return 0;
+      /**
+       * By default, smaller values will be first, we don't want that. That's why the result is reversed.
+       * And that's why in the constructor the max value is zero; We want larger values first.
+       */
+      return -(a.compare(b));
   }
 
   void FindShortestSeparator(std::string* start, const rocksdb::Slice& limit) const override {};

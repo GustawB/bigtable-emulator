@@ -1,6 +1,3 @@
-1. WriteBatch or Transaction
-2. Why there is no protection for writes to column families that don't exist
-
 https://medium.com/pinterest-engineering/building-pinterests-new-wide-column-database-using-rocksdb-f5277ee4e3d2
 RocksDB has something called "Wide columns"; technically it looks like rows,
 but I didn't see any iterator API for it (maybe I just didn't look hard enough).

@@ -468,30 +468,36 @@ class ColumnFamily {
  */
 class PersistentColumnFamily {
 public:
-  PersistentColumnFamily() = delete;
-  PersistentColumnFamily(rocksdb::DB* db_, rocksdb::ColumnFamilyOptions opts, const std::string& name);
-  static StatusOr<std::shared_ptr<PersistentColumnFamily>> ConstructAggregateColumnFamily(
-      google::bigtable::admin::v2::Type value_type, rocksdb::DB* db_, const std::string& name);
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(std::shared_ptr<rocksdb::DB> db,
+    rocksdb::ColumnFamilyOptions opts, std::string const& name);
   ~PersistentColumnFamily() = default;
-
-  rocksdb::Status ConstructorStatus() const { return construction_status_; }
-  rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_; }
+  rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
+  std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> ConstructAggregateColumnFamily(
+      google::bigtable::admin::v2::Type value_type, std::shared_ptr<rocksdb::DB> db_, const std::string& name);
 
   absl::optional<google::bigtable::admin::v2::Type> GetValueType() {
     return value_type_;
   };
 
   /**
-   * Drops the column family from the table and removes any references to it.
-   * Using an object of PersistentColumnFamily after calling Drop will cause panics.
+   * Drop the underlying column family handle.
+   * This will "drop" the underlying column family handle.
+   * However, as long as the pointer to the handle won't be deleted
+   * (in this case by shared_ptr wrapper) it will be usable
+   * (https://github.com/facebook/rocksdb/wiki/column-families).
+   *
+   * TODO: the way this is used is not atomic (speaking about ModifyColumnFamilies()).
+   * So, this will probably need to be changed in the future.
    */
-  rocksdb::Status Drop() const;
+  rocksdb::Status Drop() const { return db_->DropColumnFamily(handle_.get()); };
 
 private:
+  PersistentColumnFamily() {};
+
   // Owning  table
-  rocksdb::DB* db_;
-  rocksdb::ColumnFamilyHandle* handle_;
-  rocksdb::Status construction_status_;
+  std::shared_ptr<rocksdb::DB> db_;
+  std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
   absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
 };
 
@@ -591,8 +597,8 @@ class FilteredColumnFamilyStream : public AbstractCellStreamImpl {
 
 class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
 public:
-  FilteredPersistentColumnFamilyStream(rocksdb::ColumnFamilyHandle* handle,
-                                        std::string column_family_name, rocksdb::DB* db_);
+  FilteredPersistentColumnFamilyStream(std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
+                                        std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
@@ -601,21 +607,24 @@ public:
 
 private:
   void InitializeIfNeeded() const;
-  std::string GetRowName(std::string key) const;
-  std::string GetColumnName(std::string key) const;
+  std::string GetRowName(std::string const& key) const;
+  std::string GetColumnName(std::string const& key) const;
 
   std::string column_family_name_;
-  rocksdb::ColumnFamilyHandle* handle_;
+  std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
 
-  rocksdb::DB* db_;
+  std::shared_ptr<rocksdb::DB> db_;
   mutable bool initialized_{false};
-  mutable rocksdb::Iterator* it_;
+  mutable std::unique_ptr<rocksdb::Iterator> it_;
   mutable std::string curr_row_;
   mutable std::string curr_col_;
   mutable std::string curr_value_string_;
   mutable absl::optional<CellView> cur_value_;
   mutable std::string curr_timestamp_string_;
   mutable rocksdb::Slice curr_timestamp_;
+
+  // TODO: Discuss if its okay, or should we e.g. forbid using ':' elsewhere
+  const char row_col_separator_ = ':';
 };
 
 }  // namespace emulator
