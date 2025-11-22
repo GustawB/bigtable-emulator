@@ -15,15 +15,16 @@
 #ifndef GOOGLE_CLOUD_CPP_GOOGLE_CLOUD_BIGTABLE_EMULATOR_COLUMN_FAMILY_H
 #define GOOGLE_CLOUD_CPP_GOOGLE_CLOUD_BIGTABLE_EMULATOR_COLUMN_FAMILY_H
 
+#include "google/cloud/internal/big_endian.h"
+#include "google/cloud/status_or.h"
+#include "absl/types/optional.h"
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
 #include "range_set.h"
-#include "google/cloud/internal/big_endian.h"
-#include "google/cloud/status_or.h"
-#include "absl/types/optional.h"
 #include <google/bigtable/admin/v2/types.pb.h>
 #include <google/bigtable/v2/data.pb.h>
+#include <rocksdb/db.h>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +33,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <rocksdb/db.h>
 
 namespace google {
 namespace cloud {
@@ -465,9 +465,10 @@ class ColumnFamily {
  * Convenience wrapper around ColumnFamilyHandle
  */
 class PersistentColumnFamily {
-public:
-  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(std::shared_ptr<rocksdb::DB> db,
-    rocksdb::ColumnFamilyOptions opts, std::string const& name);
+ public:
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(
+      std::shared_ptr<rocksdb::DB> db, rocksdb::ColumnFamilyOptions opts,
+      std::string const& name);
   ~PersistentColumnFamily() = default;
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
@@ -479,13 +480,14 @@ public:
    * (in this case by shared_ptr wrapper) it will be usable
    * (https://github.com/facebook/rocksdb/wiki/column-families).
    *
-   * TODO: the way this is used is not atomic (speaking about ModifyColumnFamilies()).
-   * So, this will probably need to be changed in the future.
+   * TODO: the way this is used is not atomic (speaking about
+   * ModifyColumnFamilies()). So, this will probably need to be changed in the
+   * future.
    */
   rocksdb::Status Drop() { return db_->DropColumnFamily(handle_.get()); };
 
-private:
-  PersistentColumnFamily() {};
+ private:
+  PersistentColumnFamily(){};
 
   // Owning  table
   std::shared_ptr<rocksdb::DB> db_;
@@ -587,16 +589,17 @@ class FilteredColumnFamilyStream : public AbstractCellStreamImpl {
 };
 
 class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
-public:
-  FilteredPersistentColumnFamilyStream(std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-                                        std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db);
+ public:
+  FilteredPersistentColumnFamilyStream(
+      std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
+      std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
   bool Next(NextMode mode) override;
   std::string const& column_family_name() const { return column_family_name_; }
 
-private:
+ private:
   void InitializeIfNeeded() const;
   std::string GetRowName(std::string const& key) const;
   std::string GetColumnName(std::string const& key) const;
@@ -615,7 +618,7 @@ private:
   mutable rocksdb::Slice curr_timestamp_;
 
   // TODO: Discuss if its okay, or should we e.g. forbid using ':' elsewhere
-  const char row_col_separator_ = ':';
+  char const row_col_separator_ = ':';
 };
 
 }  // namespace emulator

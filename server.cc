@@ -13,11 +13,12 @@
 // limitations under the License.
 
 #include "server.h"
+#include "google/cloud/internal/make_status.h"
+#include "google/cloud/status_or.h"
+#include "absl/strings/str_cat.h"
 #include "cluster.h"
 #include "row_streamer.h"
 #include "to_grpc_status.h"
-#include "google/cloud/internal/make_status.h"
-#include "google/cloud/status_or.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.grpc.pb.h>
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
@@ -26,7 +27,6 @@
 #include <google/longrunning/operations.pb.h>
 #include <google/protobuf/empty.pb.h>
 #include <google/protobuf/util/time_util.h>
-#include "absl/strings/str_cat.h"
 #include <grpcpp/impl/call_op_set.h>
 #include <grpcpp/security/server_credentials.h>
 #include <grpcpp/server.h>
@@ -334,7 +334,8 @@ class EmulatorTableService final : public btadmin::BigtableTableAdmin::Service {
 
 class DefaultEmulatorServer : public EmulatorServer {
  public:
-  DefaultEmulatorServer(std::string const& host, std::uint16_t port, bool persist)
+  DefaultEmulatorServer(std::string const& host, std::uint16_t port,
+                        bool persist)
       : bound_port_(port),
         should_persist_(persist),
         cluster_(std::make_shared<Cluster>(persist)),
@@ -364,7 +365,8 @@ class DefaultEmulatorServer : public EmulatorServer {
 
 StatusOr<std::unique_ptr<EmulatorServer>> CreateDefaultEmulatorServer(
     std::string const& host, std::uint16_t port, bool persist) {
-  auto* default_emulator_server = new DefaultEmulatorServer(host, port, persist);
+  auto* default_emulator_server =
+      new DefaultEmulatorServer(host, port, persist);
   if (!default_emulator_server->HasValidServer()) {
     return UnknownError("An unknown error occurred when starting server",
                         GCP_ERROR_INFO()
