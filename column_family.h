@@ -472,6 +472,18 @@ public:
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
 
+  /**
+   * Drop the underlying column family handle.
+   * This will "drop" the underlying column family handle.
+   * However, as long as the pointer to the handle won't be deleted
+   * (in this case by shared_ptr wrapper) it will be usable
+   * (https://github.com/facebook/rocksdb/wiki/column-families).
+   *
+   * TODO: the way this is used is not atomic (speaking about ModifyColumnFamilies()).
+   * So, this will probably need to be changed in the future.
+   */
+  rocksdb::Status Drop() { return db_->DropColumnFamily(handle_.get()); };
+
 private:
   PersistentColumnFamily() {};
 

@@ -10,27 +10,17 @@ namespace google {
 namespace cloud {
 namespace bigtable {
 namespace emulator {
-
-inline std::string TimestampToHexString(int64_t timestamp) {
-  std::stringstream stream;
-  stream << std::setfill ('0') << std::setw(sizeof(int64_t)*2)
-       << std::hex << timestamp;
-  return stream.str();
-}
-
 class TimestampComparator : public rocksdb::Comparator {
 public:
   TimestampComparator()  : Comparator(2 * sizeof(int64_t)),
-    min_(TimestampToHexString(INT64_MIN)), max_(TimestampToHexString(INT64_MAX)) {}
+    min_(absl::StrFormat("%016x", INT64_MIN)), max_(absl::StrFormat("%016x", INT64_MAX)) {}
 
   const char* Name() const override {
       return "TimestampComparator";
   }
 
   int Compare(const rocksdb::Slice& a, const rocksdb::Slice& b) const override {
-      if (a.ToString() < b.ToString()) { return -1; }
-      if (a.ToString() > b.ToString()) { return 1; }
-      return 0;
+      return a.compare(b);
   }
 
   void FindShortestSeparator(std::string* start, const rocksdb::Slice& limit) const override {};

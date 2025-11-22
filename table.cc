@@ -520,7 +520,7 @@ StatusOr<google::bigtable::admin::v2::Table> PersistentTable::ModifyColumnFamili
                                  "modification", modification.DebugString()));
       }
 
-      // TODO: This needs to be done atomically
+      // TODO: This needs to be done atomically, but it will be a larger issue to handle.
       rocksdb::Status res = new_handles[modification.id()]->Drop();
       if (!res.ok()) {
         return InternalError("Failed to drop a column family: " + res.ToString(),
@@ -681,7 +681,7 @@ Status PersistentTable::DoMutations(std::string const& row_key,
         "; column: " << set_cell.column_qualifier() << "; value: " << set_cell.value() << std::endl;
       rocksdb::Status res = transaction.Put(handles_[set_cell.family_name()]->ToRawPtr(),
                       row_key + ':' + set_cell.column_qualifier(),
-                      TimestampToHexString(timestamp.count()), set_cell.value());
+                      absl::StrFormat("%016x", timestamp.count()), set_cell.value());
       if (!res.ok()) {
         return InternalError("Failed to put write into the transaction; " + res.ToString(),
                              GCP_ERROR_INFO().WithMetadata(

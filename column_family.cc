@@ -313,7 +313,7 @@ StatusOr<std::shared_ptr<PersistentColumnFamily>> PersistentColumnFamily::Create
   opts.comparator = new TimestampComparator();
 
   rocksdb::ColumnFamilyHandle* raw = nullptr;
-  auto status = db->CreateColumnFamily(opts, name, &raw);
+  auto status = pcf.db_->CreateColumnFamily(opts, name, &raw);
   if (!status.ok()) {
     return InternalError(
       "Failed to create Column Family: " + status.ToString(),
@@ -326,7 +326,6 @@ StatusOr<std::shared_ptr<PersistentColumnFamily>> PersistentColumnFamily::Create
       rocksdb::Status res = pcf.db_->DropColumnFamily(h);
       delete h;
     });
-
   return std::make_shared<PersistentColumnFamily>(pcf);
 }
 
@@ -500,7 +499,7 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     rocksdb::ReadOptions opts;
     std::chrono::milliseconds timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch());
-    curr_timestamp_string_ = TimestampToHexString(timestamp.count());
+    curr_timestamp_string_ = absl::StrFormat("%016x", timestamp.count());
     curr_timestamp_ = curr_timestamp_string_;
 
     opts.timestamp = &curr_timestamp_;

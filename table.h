@@ -47,7 +47,7 @@ namespace emulator {
 class Table {
 public:
     static StatusOr<std::shared_ptr<Table>> Create(const std::string& table_name,
-      google::bigtable::admin::v2::Table schema, bool should_persist, std::string const& data_root = "/root");
+      google::bigtable::admin::v2::Table schema, bool should_persist, std::string const& data_root = "/root/");
 
     virtual google::bigtable::admin::v2::Table GetSchema() const = 0;
 
