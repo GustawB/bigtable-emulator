@@ -13,14 +13,18 @@ namespace emulator {
 class TimestampComparator : public rocksdb::Comparator {
 public:
   TimestampComparator()  : Comparator(2 * sizeof(int64_t)),
-    min_(absl::StrFormat("%016x", INT64_MIN)), max_(absl::StrFormat("%016x", INT64_MAX)) {}
+    min_(absl::StrFormat("%016x", INT64_MAX)), max_(absl::StrFormat("%016x", 0)) {}
 
   const char* Name() const override {
       return "TimestampComparator";
   }
 
   int Compare(const rocksdb::Slice& a, const rocksdb::Slice& b) const override {
-      return a.compare(b);
+      /**
+       * By default, smaller values will be first, we don't want that. That's why the result is reversed.
+       * And that's why in the constructor the max value is zero; We want larger values first.
+       */
+      return -(a.compare(b));
   }
 
   void FindShortestSeparator(std::string* start, const rocksdb::Slice& limit) const override {};

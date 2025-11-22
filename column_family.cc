@@ -453,7 +453,8 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle, std::string const& column_family_name ,
   std::shared_ptr<rocksdb::DB> db) : column_family_name_(column_family_name), handle_(std::move(handle)),
-  db_(std::move(db)) {}
+  db_(std::move(db)), curr_timestamp_string_(absl::StrFormat("%016x", 0)), // See timestamp_comparator.h
+  curr_timestamp_(curr_timestamp_string_) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(InternalFilter const& internal_filter) {
   // TODO: Implement
@@ -497,11 +498,6 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     initialized_ = true;
 
     rocksdb::ReadOptions opts;
-    std::chrono::milliseconds timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch());
-    curr_timestamp_string_ = absl::StrFormat("%016x", timestamp.count());
-    curr_timestamp_ = curr_timestamp_string_;
-
     opts.timestamp = &curr_timestamp_;
     it_ = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();
