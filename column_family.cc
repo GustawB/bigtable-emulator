@@ -13,18 +13,19 @@
 // limitations under the License.
 
 #include "column_family.h"
-#include "cell_view.h"
-#include "filter.h"
-#include "filtered_map.h"
-#include "merge_operator.h"
 #include "google/cloud/internal/big_endian.h"
 #include "google/cloud/internal/make_status.h"
 #include "google/cloud/status_or.h"
-#include <google/bigtable/admin/v2/types.pb.h>
-#include <google/bigtable/v2/data.pb.h>
 #include "absl/strings/str_format.h"
 #include "absl/types/optional.h"
 #include "absl/types/variant.h"
+#include "cell_view.h"
+#include "filter.h"
+#include "filtered_map.h"
+#include "timestamp_comparator.h"
+#include "merge_operator.h"
+#include <google/bigtable/admin/v2/types.pb.h>
+#include <google/bigtable/v2/data.pb.h>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -34,8 +35,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "timestamp_comparator.h"
 
 namespace google {
 namespace cloud {
@@ -307,8 +306,10 @@ absl::optional<Cell> ColumnFamily::DeleteTimeStamp(
   return ret;
 }
 
-StatusOr<std::shared_ptr<PersistentColumnFamily>> PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
-  rocksdb::ColumnFamilyOptions opts, const std::string &name) {
+StatusOr<std::shared_ptr<PersistentColumnFamily>>
+PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
+                               rocksdb::ColumnFamilyOptions opts,
+                               std::string const& name) {
   PersistentColumnFamily pcf;
   pcf.db_ = std::move(db);
   opts.comparator = new TimestampComparator();
@@ -316,18 +317,26 @@ StatusOr<std::shared_ptr<PersistentColumnFamily>> PersistentColumnFamily::Create
   rocksdb::ColumnFamilyHandle* raw = nullptr;
   auto status = pcf.db_->CreateColumnFamily(opts, name, &raw);
   if (!status.ok()) {
-    return InternalError(
-      "Failed to create Column Family: " + status.ToString(),
-      GCP_ERROR_INFO().WithMetadata("cf name",name));
+    return InternalError("Failed to create Column Family: " + status.ToString(),
+                         GCP_ERROR_INFO().WithMetadata("cf name", name));
   }
 
-  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(raw,
-    [&pcf](rocksdb::ColumnFamilyHandle* h) {
-      // TODO; think how to exactly do this
-      rocksdb::Status res = pcf.db_->DropColumnFamily(h);
-      delete h;
-    });
-  return std::make_shared<PersistentColumnFamily>(pcf);
+  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(raw);
+  return std::make_shared<PersistentColumnFamily>(std::move(pcf));
+}
+
+PersistentColumnFamily::~PersistentColumnFamily() {
+  // TODO; think how to exactly do this
+  // This will mark a column family as deleted, but won't actually delete its data,
+  // so if, somehow, there is another shared_ptr using it, it will be safe to use it.
+  // Explicit delete call, needed to remove the column family, is left for the
+  // shared_ptr destructor.
+  if (db_) {
+    rocksdb::Status res = db_->DropColumnFamily(handle_.get());
+    if (!res.ok()) {
+      std::cerr << "Failed to drop column family: " << res.ToString() << std::endl;
+    }
+  }
 }
 
 class FilteredColumnFamilyStream::FilterApply {
@@ -454,12 +463,13 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle, std::string const& column_family_name ,
   std::shared_ptr<rocksdb::DB> db) : column_family_name_(column_family_name), handle_(std::move(handle)),
-  db_(std::move(db)), curr_timestamp_string_(absl::StrFormat("%016x", 0)), // See timestamp_comparator.h
+  db_(std::move(db)), curr_timestamp_string_(TimestampToHexString(0)), // See timestamp_comparator.h
   curr_timestamp_(curr_timestamp_string_) {}
 
-bool FilteredPersistentColumnFamilyStream::ApplyFilter(InternalFilter const& internal_filter) {
+bool FilteredPersistentColumnFamilyStream::ApplyFilter(
+    InternalFilter const& internal_filter) {
   // TODO: Implement
-  return true;
+  return false;
 }
 
 bool FilteredPersistentColumnFamilyStream::HasValue() const {
@@ -472,8 +482,9 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   if (!cur_value_) {
     curr_value_string_ = it_->value().ToString();
     int64_t milliseconds = std::stoll(it_->timestamp().ToString(), nullptr, 16);
-    cur_value_ = CellView(curr_row_, column_family_name_,
-              curr_col_, std::chrono::milliseconds(milliseconds), curr_value_string_);
+    cur_value_ =
+        CellView(curr_row_, column_family_name_, curr_col_,
+                 std::chrono::milliseconds(milliseconds), curr_value_string_);
   }
   return cur_value_.value();
 }
@@ -489,7 +500,7 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
     }
     return true;
   } else {
-    //TODO: Implement other types of iterator
+    // TODO: Implement other types of iterator
     return false;
   }
 }
@@ -500,7 +511,8 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
 
     rocksdb::ReadOptions opts;
     opts.timestamp = &curr_timestamp_;
-    it_ = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(opts, handle_.get()));
+    it_ = std::unique_ptr<rocksdb::Iterator>(
+        db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();
     if (it_->Valid()) {
       curr_row_ = GetRowName(it_->key().ToString());
@@ -512,12 +524,14 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
   }
 }
 
-std::string FilteredPersistentColumnFamilyStream::GetRowName(std::string const& key) const {
+std::string FilteredPersistentColumnFamilyStream::GetRowName(
+    std::string const& key) const {
   auto pos = key.find(row_col_separator_);
   return key.substr(0, pos);
 }
 
-std::string FilteredPersistentColumnFamilyStream::GetColumnName(std::string const& key) const {
+std::string FilteredPersistentColumnFamilyStream::GetColumnName(
+    std::string const& key) const {
   auto pos = key.find(row_col_separator_);
   return key.substr(pos + 1, key.length());
 }
