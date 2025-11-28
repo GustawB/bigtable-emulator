@@ -320,13 +320,23 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
                          GCP_ERROR_INFO().WithMetadata("cf name", name));
   }
 
-  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(
-      raw, [&pcf](rocksdb::ColumnFamilyHandle* h) {
-        // TODO; think how to exactly do this
-        rocksdb::Status res = pcf.db_->DropColumnFamily(h);
-        delete h;
-      });
-  return std::make_shared<PersistentColumnFamily>(pcf);
+  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(raw);
+  return std::make_shared<PersistentColumnFamily>(std::move(pcf));
+}
+
+PersistentColumnFamily::~PersistentColumnFamily() {
+  // TODO; think how to exactly do this
+  std::cout << "SEX\n";
+  // This will mark a column family as deleted, but won't actually delete its data,
+  // so if, somehow, there is another shared_ptr using it, it will be safe to use it.
+  // Explicit delete call, needed to remove the column family, is left for the
+  // shared_ptr destructor.
+  if (db_) {
+    rocksdb::Status res = db_->DropColumnFamily(handle_.get());
+    if (!res.ok()) {
+      //  std::cerr << "Failed to drop column family: " << res.ToString() << std::endl;
+    }
+  }
 }
 
 class FilteredColumnFamilyStream::FilterApply {
@@ -451,19 +461,15 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
 }
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
-    std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db)
-    : column_family_name_(column_family_name),
-      handle_(std::move(handle)),
-      db_(std::move(db)),
-      curr_timestamp_string_(
-          absl::StrFormat("%016x", 0)),  // See timestamp_comparator.h
-      curr_timestamp_(curr_timestamp_string_) {}
+  std::shared_ptr<rocksdb::ColumnFamilyHandle> handle, std::string const& column_family_name ,
+  std::shared_ptr<rocksdb::DB> db) : column_family_name_(column_family_name), handle_(std::move(handle)),
+  db_(std::move(db)), curr_timestamp_string_(TimestampToHexString(0)), // See timestamp_comparator.h
+  curr_timestamp_(curr_timestamp_string_) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
   // TODO: Implement
-  return true;
+  return false;
 }
 
 bool FilteredPersistentColumnFamilyStream::HasValue() const {

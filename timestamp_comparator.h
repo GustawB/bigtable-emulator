@@ -10,12 +10,16 @@ namespace google {
 namespace cloud {
 namespace bigtable {
 namespace emulator {
+
+inline std::string TimestampToHexString(int64_t timestamp) {
+    return absl::StrFormat("%016x", timestamp);
+}
+
 class TimestampComparator : public rocksdb::Comparator {
- public:
-  TimestampComparator()
-      : Comparator(2 * sizeof(int64_t)),
-        min_(absl::StrFormat("%016x", INT64_MAX)),
-        max_(absl::StrFormat("%016x", 0)) {}
+public:
+  TimestampComparator() : // int64_t has 8 bytes, and each byte is represented by a two-digit number (hence multiplication)
+    Comparator(2 * sizeof(int64_t)),
+    min_(TimestampToHexString(std::numeric_limits<int64_t>::max())), max_(TimestampToHexString(0)) {}
 
   char const* Name() const override { return "TimestampComparator"; }
 
@@ -54,9 +58,9 @@ class TimestampComparator : public rocksdb::Comparator {
     return Compare(ts1, ts2);
   }
 
- private:
-  std::string min_;
-  std::string max_;
+private:
+    std::string const min_;
+    std::string const max_;
 };
 
 }  // namespace emulator

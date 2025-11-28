@@ -465,11 +465,16 @@ class ColumnFamily {
  * Convenience wrapper around ColumnFamilyHandle
  */
 class PersistentColumnFamily {
- public:
-  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(
-      std::shared_ptr<rocksdb::DB> db, rocksdb::ColumnFamilyOptions opts,
-      std::string const& name);
-  ~PersistentColumnFamily() = default;
+public:
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(std::shared_ptr<rocksdb::DB> db,
+    rocksdb::ColumnFamilyOptions opts, std::string const& name);
+
+    PersistentColumnFamily(PersistentColumnFamily&& other) noexcept {
+        db_ = std::move(other.db_);
+        handle_ = std::move(other.handle_);
+    }
+
+  ~PersistentColumnFamily();
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
 
