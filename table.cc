@@ -529,15 +529,7 @@ PersistentTable::ModifyColumnFamilies(
                                  "modification", modification.DebugString()));
       }
 
-      // TODO: This needs to be done atomically, but it will be a larger issue
-      // to handle.
-      rocksdb::Status res = new_handles[modification.id()]->Drop();
-      if (!res.ok()) {
-        return InternalError(
-            "Failed to drop a column family: " + res.ToString(),
-            GCP_ERROR_INFO().WithMetadata("modification",
-                                          modification.DebugString()));
-      }
+      // TODO: This needs to be done atomically, but it will be a larger issue to handle.
       new_handles.erase(modification.id());
       if (new_schema.mutable_column_families()->erase(modification.id()) == 0) {
         return InternalError("Column family with no schema.",
@@ -718,7 +710,7 @@ Status PersistentTable::DoMutations(
 
   rocksdb::Status res = db_->Write(rocksdb::WriteOptions(), &transaction);
   if (!res.ok()) {
-    return InternalError("Failed to write the transaction",
+    return InternalError("Failed to write the transaction: " + res.ToString(),
                          GCP_ERROR_INFO().WithMetadata("mutation", "dss"));
   }
   return Status();
