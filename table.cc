@@ -316,8 +316,8 @@ Status InMemoryTable::MutateRow(
 }
 
 template <typename MESSAGE>
-StatusOr<std::reference_wrapper<PersistentColumnFamily>> PersistentTable::FindColumnFamily(
-    MESSAGE const& message) const {
+StatusOr<std::reference_wrapper<PersistentColumnFamily>>
+PersistentTable::FindColumnFamily(MESSAGE const& message) const {
   auto column_family_it = handles_.find(message.family_name());
   if (column_family_it == handles_.end()) {
     return NotFoundError(
@@ -491,7 +491,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
   }
   res->db_ = std::shared_ptr<rocksdb::DB>(raw_db);
 
-  for (const auto& cfd : schema.column_families()) {
+  for (auto const& cfd : schema.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
         absl::nullopt;
 
@@ -500,8 +500,8 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
     }
 
     if (opt_value_type.has_value()) {
-      auto new_cf =
-        PersistentColumnFamily::ConstructAggregateColumnFamily(opt_value_type.value(), res->db_, table_name);
+      auto new_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
+          opt_value_type.value(), res->db_, table_name);
       if (!new_cf) {
         return new_cf.status();
       }
@@ -509,13 +509,13 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
     } else {
       // TODO: handle opts
       rocksdb::ColumnFamilyOptions opts;
-      auto maybe_new_cf = PersistentColumnFamily::Create(
-                                                        res->db_, opts, cfd.first);
+      auto maybe_new_cf =
+          PersistentColumnFamily::Create(res->db_, opts, cfd.first);
       if (!maybe_new_cf.ok()) {
         return InternalError(
-        "failed to create column family " + cfd.first + "; Error status: " + status.ToString(),
-        GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString())
-        );
+            "failed to create column family " + cfd.first +
+                "; Error status: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString()));
       }
       res->handles_.emplace(cfd.first, maybe_new_cf.value());
     }
@@ -557,7 +557,8 @@ PersistentTable::ModifyColumnFamilies(
                                  "modification", modification.DebugString()));
       }
 
-      // TODO: This needs to be done atomically, but it will be a larger issue to handle.
+      // TODO: This needs to be done atomically, but it will be a larger issue
+      // to handle.
       new_handles.erase(modification.id());
       if (new_schema.mutable_column_families()->erase(modification.id()) == 0) {
         return InternalError("Column family with no schema.",
@@ -620,9 +621,13 @@ PersistentTable::ModifyColumnFamilies(
       std::shared_ptr<PersistentColumnFamily> cf;
       // Have we been asked to create an aggregate column family?
       if (modification.create().has_value_type()) {
-        return InternalError("Unimplemented operation",
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "modification", modification.DebugString()));
+        auto value_type = modification.create().value_type();
+        auto maybe_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
+            value_type, db_, modification.id());
+        if (!maybe_cf) {
+          return maybe_cf.status();
+        }
+        cf = std::move(maybe_cf.value());
       } else {
         auto maybe_cf = PersistentColumnFamily::Create(
             db_, rocksdb::ColumnFamilyOptions(), modification.id());
@@ -681,7 +686,6 @@ Status PersistentTable::DoMutations(
                                       absl::StrFormat("%zu", row_key.size())));
   }
 
-  // TODO: Ask Marek what exactly IS a transaction in this context
   PersistentRowTransaction row_transaction(this->get(), row_key);
   for (auto const& mutation : mutations) {
     if (mutation.has_set_cell()) {
@@ -719,7 +723,7 @@ Status PersistentTable::DoMutations(
         timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::microseconds(
                 add_to_cell.timestamp().raw_timestamp_micros()));
-          }
+      }
 
       // If no valid timestamp is provided, override with the system time.
       if (timestamp <= std::chrono::milliseconds::zero()) {
@@ -749,8 +753,7 @@ Status PersistentTable::DoMutations(
   Status status = row_transaction.commit();
   if (!status.ok()) {
     return InternalError("Failed to write the transaction: " + status.message(),
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "mutation", "dss"));
+                         GCP_ERROR_INFO().WithMetadata("mutation", "dss"));
   }
   return Status();
 }
@@ -1560,7 +1563,8 @@ Status RowTransaction::SetCell(
 }
 
 Status PersistentRowTransaction::commit() {
-  rocksdb::Status status = table_->ToRawPtr()->Write(rocksdb::WriteOptions(), &txn_);
+  rocksdb::Status status =
+      table_->ToRawPtr()->Write(rocksdb::WriteOptions(), &txn_);
   if (!status.ok()) {
     return InvalidArgumentError(
         "Failed to commit the transaction: " + status.ToString(),
@@ -1569,8 +1573,9 @@ Status PersistentRowTransaction::commit() {
   return Status();
 }
 
-Status PersistentRowTransaction::SetCell(::google::bigtable::v2::Mutation_SetCell const& set_cell,
-                 absl::optional<std::chrono::milliseconds> timestamp_override) {
+Status PersistentRowTransaction::SetCell(
+    ::google::bigtable::v2::Mutation_SetCell const& set_cell,
+    absl::optional<std::chrono::milliseconds> timestamp_override) {
   auto maybe_column_family = table_->FindColumnFamily(set_cell);
   if (!maybe_column_family) {
     return maybe_column_family.status();
@@ -1585,23 +1590,27 @@ Status PersistentRowTransaction::SetCell(::google::bigtable::v2::Mutation_SetCel
     timestamp = timestamp_override.value();
   }
 
-  std::cout << "Writing to column family: " << column_family.ToRawPtr()->GetName() << "; row key: " << row_key_ <<
-        "; column: " << set_cell.column_qualifier() << "; value: " << set_cell.value() << std::endl;
+  std::cout << "Writing to column family: "
+            << column_family.ToRawPtr()->GetName() << "; row key: " << row_key_
+            << "; column: " << set_cell.column_qualifier()
+            << "; value: " << set_cell.value() << std::endl;
 
-  rocksdb::Status status =  txn_.Put(column_family.ToRawPtr(), row_key_ + ':' + set_cell.column_qualifier(),
-                  absl::StrFormat("%016x", timestamp.count()), set_cell.value());
+  rocksdb::Status status = txn_.Put(
+      column_family.ToRawPtr(), row_key_ + ':' + set_cell.column_qualifier(),
+      absl::StrFormat("%016x", timestamp.count()), set_cell.value());
 
   if (!status.ok()) {
-    return InternalError("Failed to put write into the transaction; " + status.ToString(),
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "column_family", column_family.ToRawPtr()->GetName()));
+    return InternalError(
+        "Failed to put write into the transaction; " + status.ToString(),
+        GCP_ERROR_INFO().WithMetadata("column_family",
+                                      column_family.ToRawPtr()->GetName()));
   }
   return Status();
 }
 
 Status PersistentRowTransaction::AddToCell(
-      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-      absl::optional<std::chrono::milliseconds> timestamp_override) {
+    ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+    absl::optional<std::chrono::milliseconds> timestamp_override) {
   auto status = table_->FindColumnFamily(add_to_cell);
   if (!status.ok()) {
     return status.status();
@@ -1672,10 +1681,11 @@ Status PersistentRowTransaction::AddToCell(
     return InvalidArgumentError(
         "column qualifier not set",
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
-      }
+  }
   auto column_qualifier = add_to_cell.column_qualifier().raw_value();
 
-  rocksdb::Status merge_status = txn_.Merge(cf.ToRawPtr(), row_key, absl::StrFormat("%016x", ts_ms.count()), value);
+  rocksdb::Status merge_status = txn_.Merge(
+      cf.ToRawPtr(), row_key, TimestampToHexString(ts_ms.count()), value);
   if (!merge_status.ok()) {
     return InternalError(
         "Failed to add to cell",
@@ -1705,8 +1715,8 @@ Status PersistentRowTransaction::DeleteFromRow() {
 }
 
 Status PersistentRowTransaction::DeleteFromFamily(
-  ::google::bigtable::v2::Mutation_DeleteFromFamily const&
-      delete_from_family) {
+    ::google::bigtable::v2::Mutation_DeleteFromFamily const&
+        delete_from_family) {
   // TODO: Implement
   return Status();
 }
