@@ -56,7 +56,7 @@ bool MaxUpdateCellBEInt64::Merge(rocksdb::Slice const& key,
   if (existing_int.value() > new_int.value()) {
     *new_value = existing_value->ToString();
   } else {
-    *new_value = std::to_string(new_int.value());
+    *new_value = google::cloud::internal::EncodeBigEndian(new_int.value());
   }
 
   return true;
@@ -83,7 +83,7 @@ bool MinUpdateCellBEInt64::Merge(rocksdb::Slice const& key,
   if (existing_int.value() < new_int.value()) {
     *new_value = existing_value->ToString();
   } else {
-    *new_value = std::to_string(new_int.value());
+    *new_value = google::cloud::internal::EncodeBigEndian(new_int.value());
   }
 
   return true;
