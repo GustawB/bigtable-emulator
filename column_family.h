@@ -465,18 +465,29 @@ class ColumnFamily {
  * Convenience wrapper around ColumnFamilyHandle
  */
 class PersistentColumnFamily {
-public:
-  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(std::shared_ptr<rocksdb::DB> db,
-    rocksdb::ColumnFamilyOptions opts, std::string const& name);
+ public:
+  PersistentColumnFamily() = default;
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(
+      std::shared_ptr<rocksdb::DB> db, rocksdb::ColumnFamilyOptions opts,
+      std::string const& name);
 
-    PersistentColumnFamily(PersistentColumnFamily&& other) noexcept {
-        db_ = std::move(other.db_);
-        handle_ = std::move(other.handle_);
-    }
+  PersistentColumnFamily(PersistentColumnFamily&& other) noexcept {
+    db_ = std::move(other.db_);
+    handle_ = std::move(other.handle_);
+    value_type_ = std::move(other.value_type_);
+  }
 
   ~PersistentColumnFamily();
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>>
+  ConstructAggregateColumnFamily(google::bigtable::admin::v2::Type value_type,
+                                 std::shared_ptr<rocksdb::DB> db_,
+                                 std::string const& name);
+
+  absl::optional<google::bigtable::admin::v2::Type> GetValueType() {
+    return value_type_;
+  };
 
   /**
    * Drop the underlying column family handle.
@@ -489,14 +500,13 @@ public:
    * ModifyColumnFamilies()). So, this will probably need to be changed in the
    * future.
    */
-  rocksdb::Status Drop() { return db_->DropColumnFamily(handle_.get()); };
+  rocksdb::Status Drop() const { return db_->DropColumnFamily(handle_.get()); };
 
  private:
-  PersistentColumnFamily(){};
-
   // Owning  table
   std::shared_ptr<rocksdb::DB> db_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
+  absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
 };
 
 /**

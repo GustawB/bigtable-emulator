@@ -22,6 +22,7 @@
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
+#include "merge_operator.h"
 #include "timestamp_comparator.h"
 #include <google/bigtable/admin/v2/types.pb.h>
 #include <google/bigtable/v2/data.pb.h>
@@ -326,14 +327,15 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
 
 PersistentColumnFamily::~PersistentColumnFamily() {
   // TODO; think how to exactly do this
-  // This will mark a column family as deleted, but won't actually delete its data,
-  // so if, somehow, there is another shared_ptr using it, it will be safe to use it.
-  // Explicit delete call, needed to remove the column family, is left for the
-  // shared_ptr destructor.
+  // This will mark a column family as deleted, but won't actually delete its
+  // data, so if, somehow, there is another shared_ptr using it, it will be safe
+  // to use it. Explicit delete call, needed to remove the column family, is
+  // left for the shared_ptr destructor.
   if (db_) {
     rocksdb::Status res = db_->DropColumnFamily(handle_.get());
     if (!res.ok()) {
-      std::cerr << "Failed to drop column family: " << res.ToString() << std::endl;
+      std::cerr << "Failed to drop column family: " << res.ToString()
+                << std::endl;
     }
   }
 }
@@ -460,10 +462,14 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
 }
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
-  std::shared_ptr<rocksdb::ColumnFamilyHandle> handle, std::string const& column_family_name ,
-  std::shared_ptr<rocksdb::DB> db) : column_family_name_(column_family_name), handle_(std::move(handle)),
-  db_(std::move(db)), curr_timestamp_string_(TimestampToHexString(0)), // See timestamp_comparator.h
-  curr_timestamp_(curr_timestamp_string_) {}
+    std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
+    std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db)
+    : column_family_name_(column_family_name),
+      handle_(std::move(handle)),
+      db_(std::move(db)),
+      curr_timestamp_string_(
+          TimestampToHexString(0)),  // See timestamp_comparator.h
+      curr_timestamp_(curr_timestamp_string_) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
@@ -562,6 +568,51 @@ ColumnFamily::ConstructAggregateColumnFamily(
 
     cf->value_type_ = std::move(value_type);
 
+    return cf;
+  }
+
+  return InvalidArgumentError(
+      "no aggregate type set in the supplied value_type",
+      GCP_ERROR_INFO().WithMetadata("supplied value type",
+                                    value_type.DebugString()));
+}
+
+StatusOr<std::shared_ptr<PersistentColumnFamily>>
+PersistentColumnFamily::ConstructAggregateColumnFamily(
+    google::bigtable::admin::v2::Type value_type,
+    std::shared_ptr<rocksdb::DB> db_, std::string const& name) {
+  rocksdb::ColumnFamilyOptions opts;
+  if (value_type.has_aggregate_type()) {
+    auto const& aggregate_type = value_type.aggregate_type();
+    switch (aggregate_type.aggregator_case()) {
+      case google::bigtable::admin::v2::Type::Aggregate::kSum:
+        opts.merge_operator = std::make_shared<SumUpdateCellBEInt64>();
+        break;
+      case google::bigtable::admin::v2::Type::Aggregate::kMin:
+        opts.merge_operator = std::make_shared<MinUpdateCellBEInt64>();
+        break;
+      case google::bigtable::admin::v2::Type::Aggregate::kMax:
+        opts.merge_operator = std::make_shared<MaxUpdateCellBEInt64>();
+        break;
+      default:
+        return InvalidArgumentError(
+            "unsupported aggregation type",
+            GCP_ERROR_INFO().WithMetadata(
+                "aggregation case",
+                absl::StrFormat("%d", aggregate_type.aggregator_case())));
+    }
+
+    auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
+    if (!maybe_cf) {
+      return InternalError(
+          "Failed to create aggregate persistent column family: " +
+              maybe_cf.status().message(),
+          GCP_ERROR_INFO().WithMetadata("supplied value type",
+                                        value_type.DebugString()));
+    }
+
+    auto cf = maybe_cf.value();
+    cf->value_type_ = std::move(value_type);
     return cf;
   }
 

@@ -70,8 +70,8 @@ class Table {
 
   /**
    * TODO: Think about this; this is called in the server.cc in some kind of
-   * loop. For the RocksDB, aybe we could do it as one operation, so it would be
-   * nice to instead extract the logic from server to the table. Right now
+   * loop. For the RocksDB, maybe we could do it as one operation, so it would
+   * be nice to instead extract the logic from server to the table. Right now
    * however, I want everything to compile.
    */
   virtual Status DoMutationsWithPossibleRollbackLocked(
@@ -193,7 +193,8 @@ class InMemoryTable : public Table,
   std::map<std::string, std::shared_ptr<ColumnFamily>> column_families_;
 };
 
-class PersistentTable : public Table {
+class PersistentTable : public Table,
+                        public std::enable_shared_from_this<PersistentTable> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       std::string const& data_root, std::string const& table_name,
@@ -242,8 +243,17 @@ class PersistentTable : public Table {
 
   ~PersistentTable() override = default;
 
+  rocksdb::DB* ToRawPtr() { return db_.get(); }
+
+  std::shared_ptr<PersistentTable> get() { return shared_from_this(); }
+
  private:
   PersistentTable() = default;
+  friend class PersistentRowTransaction;
+
+  template <typename MESSAGE>
+  StatusOr<std::reference_wrapper<PersistentColumnFamily>> FindColumnFamily(
+      MESSAGE const& message) const;
 
   Status DoMutations(
       std::string const& row_key,
@@ -326,6 +336,41 @@ class RowTransaction {
   // store a reference to it to avoid copying a potentially very large
   // (up to 4KB) value.
   std::string const& row_key_;
+};
+
+class PersistentRowTransaction {
+ public:
+  explicit PersistentRowTransaction(std::shared_ptr<PersistentTable> table,
+                                    std::string const& row_key)
+      : row_key_(row_key), txn_(0, 0, 0, 16) {
+    table_ = std::move(table);
+  };
+
+  Status commit();
+  Status SetCell(::google::bigtable::v2::Mutation_SetCell const& set_cell,
+                 absl::optional<std::chrono::milliseconds> timestamp_override =
+                     absl::nullopt);
+  Status AddToCell(
+      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+      absl::optional<std::chrono::milliseconds> timestamp_override);
+  Status MergeToCell(
+      ::google::bigtable::v2::Mutation_MergeToCell const& merge_to_cell);
+  Status DeleteFromColumn(
+      ::google::bigtable::v2::Mutation_DeleteFromColumn const&
+          delete_from_column);
+  Status DeleteFromFamily(
+      ::google::bigtable::v2::Mutation_DeleteFromFamily const&
+          delete_from_family);
+  Status DeleteFromRow();
+
+  StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+  ReadModifyWriteRow(
+      google::bigtable::v2::ReadModifyWriteRowRequest const& request);
+
+ private:
+  std::shared_ptr<PersistentTable> table_;
+  std::string const& row_key_;
+  rocksdb::WriteBatch txn_;
 };
 
 google::bigtable::v2::ReadModifyWriteRowResponse

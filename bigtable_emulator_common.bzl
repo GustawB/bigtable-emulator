@@ -27,6 +27,7 @@ bigtable_emulator_common_hdrs = [
     "test_util.h",
     "to_grpc_status.h",
     "timestamp_comparator.h",
+    "merge_operator.h",
 ]
 
 bigtable_emulator_common_srcs = [
@@ -39,4 +40,5 @@ bigtable_emulator_common_srcs = [
     "table.cc",
     "test_util.cc",
     "to_grpc_status.cc",
+    "merge_operator.cc",
 ]
