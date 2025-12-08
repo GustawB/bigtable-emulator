@@ -17,11 +17,11 @@
 
 #include "google/cloud/status.h"
 #include "google/cloud/status_or.h"
-#include "absl/types/optional.h"
 #include "column_family.h"
 #include "filter.h"
 #include "range_set.h"
 #include "row_streamer.h"
+#include "table.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/v2/bigtable.pb.h>
@@ -43,12 +43,34 @@ namespace cloud {
 namespace bigtable {
 namespace emulator {
 
+    class RowTransaction;
+
+    struct RestoreValue {
+        ColumnFamily& column_family;
+        std::string column_qualifier;
+        std::chrono::milliseconds timestamp;
+        std::string value;
+    };
+
+    struct DeleteValue {
+        ColumnFamily& column_family;
+        std::string column_qualifier;
+        std::chrono::milliseconds timestamp;
+    };
+
+    google::bigtable::v2::ReadModifyWriteRowResponse
+    FamiliesToReadModifyWriteResponse(
+        std::string const& row_key,
+        std::map<std::string, ColumnFamily> const& families);
+
 /// Objects of this class represent Bigtable tables.
-class Table {
+class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       std::string const& table_name, google::bigtable::admin::v2::Table schema,
       bool should_persist, std::string const& data_root = "/root/");
+
+  virtual std::shared_ptr<Table> get() = 0;
 
   virtual google::bigtable::admin::v2::Table GetSchema() const = 0;
 
@@ -90,10 +112,9 @@ class Table {
   ReadModifyWriteRow(
       google::bigtable::v2::ReadModifyWriteRowRequest const& request) = 0;
 
-  virtual Status SampleRowKeys(
+  Status SampleRowKeys(
       double pass_probability,
-      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>*
-          writer) = 0;
+      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer);
 
   virtual Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request) = 0;
@@ -101,14 +122,151 @@ class Table {
   virtual ~Table() = default;
 
  protected:
+    friend class RowTransaction;
+    
   Status PrepareSchema();
+
+  template <typename MESSAGE>
+  StatusOr<std::reference_wrapper<ColumnFamily>> FindColumnFamily(
+      MESSAGE const& message) const;
+
+    virtual std::unique_ptr<RowTransaction> NewRowTransaction(std::shared_ptr<Table> table, std::string const& row_key) const = 0;
 
   mutable std::mutex mu_;
   google::bigtable::admin::v2::Table schema_;
+  std::map<std::string, std::shared_ptr<ColumnFamily>> column_families_;
 };
 
-class InMemoryTable : public Table,
-                      public std::enable_shared_from_this<InMemoryTable> {
+    class RowTransaction {
+ public:
+  explicit RowTransaction(std::shared_ptr<Table> table,
+                          std::string const& row_key)
+      : table_(std::move(table)), row_key_(row_key) {}
+  virtual ~RowTransaction() = default;
+
+  virtual Status commit() = 0;
+
+  // timestamp_override, if provided, will be used instead of
+  // set_cell.timestamp. The override is used to set the timestamp to
+  // the server time in case a timestamp <= 0 is provided.
+  virtual Status SetCell(
+      ::google::bigtable::v2::Mutation_SetCell const& set_cell,
+      absl::optional<std::chrono::milliseconds> timestamp_override) = 0;
+  Status AddToCell(
+      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+      absl::optional<std::chrono::milliseconds> timestamp_override);
+  virtual Status MergeToCell(
+      ::google::bigtable::v2::Mutation_MergeToCell const& merge_to_cell) = 0;
+  virtual Status DeleteFromColumn(
+      ::google::bigtable::v2::Mutation_DeleteFromColumn const&
+          delete_from_column) = 0;
+  virtual Status DeleteFromFamily(
+      ::google::bigtable::v2::Mutation_DeleteFromFamily const&
+          delete_from_family) = 0;
+  virtual Status DeleteFromRow() = 0;
+
+  virtual StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+  ReadModifyWriteRow(
+      google::bigtable::v2::ReadModifyWriteRowRequest const& request) = 0;
+
+ protected:
+  virtual Status PerformAddToCell(
+      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+      ColumnFamily cf, std::chrono::milliseconds ts_ms, std::string& value) = 0;
+
+  std::shared_ptr<Table> table_;
+  // row_key_ is initialized from the request proto and therefore it
+  // is safe to access it while the mutation request is ongoing. We
+  // store a reference to it to avoid copying a potentially very large
+  // (up to 4KB) value.
+  std::string const& row_key_;
+};
+
+class InMemoryRowTransaction : public RowTransaction {
+ public:
+  explicit InMemoryRowTransaction(std::shared_ptr<Table> table,
+                                  std::string const& row_key)
+      : RowTransaction(std::move(table), row_key) {}
+
+  ~InMemoryRowTransaction() override {
+    if (!committed_) {
+      Undo();
+    }
+  };
+
+  Status commit() override {
+    committed_ = true;
+    return Status();
+  }
+
+  // timestamp_override, if provided, will be used instead of
+  // set_cell.timestamp. The override is used to set the timestamp to
+  // the server time in case a timestamp <= 0 is provided.
+  Status SetCell(::google::bigtable::v2::Mutation_SetCell const& set_cell,
+                 absl::optional<std::chrono::milliseconds> timestamp_override =
+                     absl::nullopt) override;
+  Status MergeToCell(::google::bigtable::v2::Mutation_MergeToCell const&
+                         merge_to_cell) override;
+  Status DeleteFromColumn(
+      ::google::bigtable::v2::Mutation_DeleteFromColumn const&
+          delete_from_column) override;
+  Status DeleteFromFamily(
+      ::google::bigtable::v2::Mutation_DeleteFromFamily const&
+          delete_from_family) override;
+  Status DeleteFromRow() override;
+
+  StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+  ReadModifyWriteRow(
+      google::bigtable::v2::ReadModifyWriteRowRequest const& request) override;
+
+ protected:
+  Status PerformAddToCell(
+      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+      ColumnFamily cf, std::chrono::milliseconds ts_ms,
+      std::string& value) override;
+
+ private:
+  void Undo();
+
+  bool committed_ = false;
+  std::stack<absl::variant<DeleteValue, RestoreValue>> undo_;
+};
+
+class PersistentRowTransaction : public RowTransaction {
+ public:
+  explicit PersistentRowTransaction(std::shared_ptr<Table> table,
+                                    std::string const& row_key)
+      : RowTransaction(std::move(table), row_key), txn_(0, 0, 0, 16){};
+
+  Status commit() override;
+  Status SetCell(::google::bigtable::v2::Mutation_SetCell const& set_cell,
+                 absl::optional<std::chrono::milliseconds> timestamp_override =
+                     absl::nullopt) override;
+  Status MergeToCell(::google::bigtable::v2::Mutation_MergeToCell const&
+                         merge_to_cell) override;
+  Status DeleteFromColumn(
+      ::google::bigtable::v2::Mutation_DeleteFromColumn const&
+          delete_from_column) override;
+  Status DeleteFromFamily(
+      ::google::bigtable::v2::Mutation_DeleteFromFamily const&
+          delete_from_family) override;
+  Status DeleteFromRow();
+
+  StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+  ReadModifyWriteRow(
+      google::bigtable::v2::ReadModifyWriteRowRequest const& request) override;
+
+ protected:
+  Status PerformAddToCell(
+      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+      ColumnFamily cf, std::chrono::milliseconds ts_ms,
+      std::string& value) override;
+
+ private:
+  rocksdb::WriteBatch txn_;
+};
+
+class InMemoryTable : public Table {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       google::bigtable::admin::v2::Table schema);
@@ -161,12 +319,7 @@ class InMemoryTable : public Table,
     return column_families_.find(column_family);
   }
 
-  Status SampleRowKeys(
-      double pass_probability,
-      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer)
-      override;
-
-  std::shared_ptr<InMemoryTable> get() { return shared_from_this(); }
+  std::shared_ptr<Table> get() override { return shared_from_this(); }
 
   Status DropRowRange(::google::bigtable::admin::v2::DropRowRangeRequest const&
                           request) override;
@@ -176,25 +329,22 @@ class InMemoryTable : public Table,
  protected:
   Status Construct(google::bigtable::admin::v2::Table schema);
 
+    std::unique_ptr<RowTransaction> NewRowTransaction(std::shared_ptr<Table> table, std::string const& row_key) const override {
+        return std::make_unique<InMemoryRowTransaction>(std::move(table), row_key);
+    }
+
  private:
   InMemoryTable() = default;
   friend class RowSetIterator;
-  friend class RowTransaction;
 
-  template <typename MESSAGE>
-  StatusOr<std::reference_wrapper<ColumnFamily>> FindColumnFamily(
-      MESSAGE const& message) const;
   bool IsDeleteProtectedNoLock() const;
   Status DoMutationsWithPossibleRollback(
       std::string const& row_key,
       google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
           mutations);
-
-  std::map<std::string, std::shared_ptr<ColumnFamily>> column_families_;
 };
 
-class PersistentTable : public Table,
-                        public std::enable_shared_from_this<PersistentTable> {
+class PersistentTable : public Table {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       std::string const& data_root, std::string const& table_name,
@@ -233,11 +383,6 @@ class PersistentTable : public Table,
   ReadModifyWriteRow(
       google::bigtable::v2::ReadModifyWriteRowRequest const& request) override;
 
-  Status SampleRowKeys(
-      double pass_probability,
-      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer)
-      override;
-
   Status DropRowRange(::google::bigtable::admin::v2::DropRowRangeRequest const&
                           request) override;
 
@@ -245,15 +390,16 @@ class PersistentTable : public Table,
 
   rocksdb::DB* ToRawPtr() { return db_.get(); }
 
-  std::shared_ptr<PersistentTable> get() { return shared_from_this(); }
+  std::shared_ptr<Table> get() override { return shared_from_this(); }
+
+protected:
+    std::unique_ptr<RowTransaction> NewRowTransaction(std::shared_ptr<Table> table, std::string const& row_key) const override {
+        return std::make_unique<PersistentRowTransaction>(std::move(table), row_key);
+    }
 
  private:
   PersistentTable() = default;
   friend class PersistentRowTransaction;
-
-  template <typename MESSAGE>
-  StatusOr<std::reference_wrapper<PersistentColumnFamily>> FindColumnFamily(
-      MESSAGE const& message) const;
 
   Status DoMutations(
       std::string const& row_key,
@@ -269,114 +415,7 @@ class PersistentTable : public Table,
    * synchronization.
    */
   std::shared_ptr<rocksdb::DB> db_;
-  std::map<std::string, std::shared_ptr<PersistentColumnFamily>> handles_;
 };
-
-struct RestoreValue {
-  ColumnFamily& column_family;
-  std::string column_qualifier;
-  std::chrono::milliseconds timestamp;
-  std::string value;
-};
-
-struct DeleteValue {
-  ColumnFamily& column_family;
-  std::string column_qualifier;
-  std::chrono::milliseconds timestamp;
-};
-
-class RowTransaction {
- public:
-  explicit RowTransaction(std::shared_ptr<InMemoryTable> table,
-                          std::string const& row_key)
-      : row_key_(row_key) {
-    table_ = std::move(table);
-    committed_ = false;
-  };
-
-  ~RowTransaction() {
-    if (!committed_) {
-      Undo();
-    }
-  };
-
-  void commit() { committed_ = true; }
-
-  // timestamp_override, if provided, will be used instead of
-  // set_cell.timestamp. The override is used to set the timestamp to
-  // the server time in case a timestamp <= 0 is provided.
-  Status SetCell(::google::bigtable::v2::Mutation_SetCell const& set_cell,
-                 absl::optional<std::chrono::milliseconds> timestamp_override =
-                     absl::nullopt);
-  Status AddToCell(
-      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-      absl::optional<std::chrono::milliseconds> timestamp_override);
-  Status MergeToCell(
-      ::google::bigtable::v2::Mutation_MergeToCell const& merge_to_cell);
-  Status DeleteFromColumn(
-      ::google::bigtable::v2::Mutation_DeleteFromColumn const&
-          delete_from_column);
-  Status DeleteFromFamily(
-      ::google::bigtable::v2::Mutation_DeleteFromFamily const&
-          delete_from_family);
-  Status DeleteFromRow();
-
-  StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
-  ReadModifyWriteRow(
-      google::bigtable::v2::ReadModifyWriteRowRequest const& request);
-
- private:
-  void Undo();
-
-  bool committed_;
-  std::shared_ptr<InMemoryTable> table_;
-  std::stack<absl::variant<DeleteValue, RestoreValue>> undo_;
-  // row_key_ is initialized from the request proto and therefore it
-  // is safe to access it while the mutation request is ongoing. We
-  // store a reference to it to avoid copying a potentially very large
-  // (up to 4KB) value.
-  std::string const& row_key_;
-};
-
-class PersistentRowTransaction {
- public:
-  explicit PersistentRowTransaction(std::shared_ptr<PersistentTable> table,
-                                    std::string const& row_key)
-      : row_key_(row_key), txn_(0, 0, 0, 16) {
-    table_ = std::move(table);
-  };
-
-  Status commit();
-  Status SetCell(::google::bigtable::v2::Mutation_SetCell const& set_cell,
-                 absl::optional<std::chrono::milliseconds> timestamp_override =
-                     absl::nullopt);
-  Status AddToCell(
-      ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-      absl::optional<std::chrono::milliseconds> timestamp_override);
-  Status MergeToCell(
-      ::google::bigtable::v2::Mutation_MergeToCell const& merge_to_cell);
-  Status DeleteFromColumn(
-      ::google::bigtable::v2::Mutation_DeleteFromColumn const&
-          delete_from_column);
-  Status DeleteFromFamily(
-      ::google::bigtable::v2::Mutation_DeleteFromFamily const&
-          delete_from_family);
-  Status DeleteFromRow();
-
-  StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
-  ReadModifyWriteRow(
-      google::bigtable::v2::ReadModifyWriteRowRequest const& request);
-
- private:
-  std::shared_ptr<PersistentTable> table_;
-  std::string const& row_key_;
-  rocksdb::WriteBatch txn_;
-};
-
-google::bigtable::v2::ReadModifyWriteRowResponse
-FamiliesToReadModifyWriteResponse(
-    std::string const& row_key,
-    std::map<std::string, ColumnFamily> const& families);
 
 /**
  * A `AbstractCellStreamImpl` which streams filtered contents of the table.
