@@ -43,25 +43,25 @@ namespace cloud {
 namespace bigtable {
 namespace emulator {
 
-    class RowTransaction;
+class RowTransaction;
 
-    struct RestoreValue {
-        ColumnFamily& column_family;
-        std::string column_qualifier;
-        std::chrono::milliseconds timestamp;
-        std::string value;
-    };
+struct RestoreValue {
+  ColumnFamily& column_family;
+  std::string column_qualifier;
+  std::chrono::milliseconds timestamp;
+  std::string value;
+};
 
-    struct DeleteValue {
-        ColumnFamily& column_family;
-        std::string column_qualifier;
-        std::chrono::milliseconds timestamp;
-    };
+struct DeleteValue {
+  ColumnFamily& column_family;
+  std::string column_qualifier;
+  std::chrono::milliseconds timestamp;
+};
 
-    google::bigtable::v2::ReadModifyWriteRowResponse
-    FamiliesToReadModifyWriteResponse(
-        std::string const& row_key,
-        std::map<std::string, ColumnFamily> const& families);
+google::bigtable::v2::ReadModifyWriteRowResponse
+FamiliesToReadModifyWriteResponse(
+    std::string const& row_key,
+    std::map<std::string, InMemoryColumnFamily> const& families);
 
 /// Objects of this class represent Bigtable tables.
 class Table : public std::enable_shared_from_this<Table> {
@@ -119,25 +119,39 @@ class Table : public std::enable_shared_from_this<Table> {
   virtual Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request) = 0;
 
+    std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator begin() {
+        return column_families_.begin();
+    }
+    std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator end() {
+        return column_families_.end();
+    }
+    std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator find(
+        std::string const& column_family) {
+        return column_families_.find(column_family);
+    }
+
   virtual ~Table() = default;
 
  protected:
-    friend class RowTransaction;
-    
+  friend class RowTransaction;
+    friend class InMemoryRowTransaction;
+    friend class PersistentRowTransaction;
+
   Status PrepareSchema();
 
   template <typename MESSAGE>
-  StatusOr<std::reference_wrapper<ColumnFamily>> FindColumnFamily(
+  StatusOr<std::shared_ptr<ColumnFamily>> FindColumnFamily(
       MESSAGE const& message) const;
 
-    virtual std::unique_ptr<RowTransaction> NewRowTransaction(std::shared_ptr<Table> table, std::string const& row_key) const = 0;
+  virtual std::unique_ptr<RowTransaction> NewRowTransaction(
+      std::shared_ptr<Table> table, std::string const& row_key) const = 0;
 
   mutable std::mutex mu_;
   google::bigtable::admin::v2::Table schema_;
   std::map<std::string, std::shared_ptr<ColumnFamily>> column_families_;
 };
 
-    class RowTransaction {
+class RowTransaction {
  public:
   explicit RowTransaction(std::shared_ptr<Table> table,
                           std::string const& row_key)
@@ -172,7 +186,7 @@ class Table : public std::enable_shared_from_this<Table> {
  protected:
   virtual Status PerformAddToCell(
       ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-      ColumnFamily cf, std::chrono::milliseconds ts_ms, std::string& value) = 0;
+      std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms, std::string& value) = 0;
 
   std::shared_ptr<Table> table_;
   // row_key_ is initialized from the request proto and therefore it
@@ -222,7 +236,7 @@ class InMemoryRowTransaction : public RowTransaction {
  protected:
   Status PerformAddToCell(
       ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-      ColumnFamily cf, std::chrono::milliseconds ts_ms,
+      std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
       std::string& value) override;
 
  private:
@@ -259,7 +273,7 @@ class PersistentRowTransaction : public RowTransaction {
  protected:
   Status PerformAddToCell(
       ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-      ColumnFamily cf, std::chrono::milliseconds ts_ms,
+      std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
       std::string& value) override;
 
  private:
@@ -308,17 +322,6 @@ class InMemoryTable : public Table {
   ReadModifyWriteRow(
       google::bigtable::v2::ReadModifyWriteRowRequest const& request) override;
 
-  std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator begin() {
-    return column_families_.begin();
-  }
-  std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator end() {
-    return column_families_.end();
-  }
-  std::map<std::string, std::shared_ptr<ColumnFamily>>::iterator find(
-      std::string const& column_family) {
-    return column_families_.find(column_family);
-  }
-
   std::shared_ptr<Table> get() override { return shared_from_this(); }
 
   Status DropRowRange(::google::bigtable::admin::v2::DropRowRangeRequest const&
@@ -329,9 +332,10 @@ class InMemoryTable : public Table {
  protected:
   Status Construct(google::bigtable::admin::v2::Table schema);
 
-    std::unique_ptr<RowTransaction> NewRowTransaction(std::shared_ptr<Table> table, std::string const& row_key) const override {
-        return std::make_unique<InMemoryRowTransaction>(std::move(table), row_key);
-    }
+  std::unique_ptr<RowTransaction> NewRowTransaction(
+      std::shared_ptr<Table> table, std::string const& row_key) const override {
+    return std::make_unique<InMemoryRowTransaction>(std::move(table), row_key);
+  }
 
  private:
   InMemoryTable() = default;
@@ -392,10 +396,12 @@ class PersistentTable : public Table {
 
   std::shared_ptr<Table> get() override { return shared_from_this(); }
 
-protected:
-    std::unique_ptr<RowTransaction> NewRowTransaction(std::shared_ptr<Table> table, std::string const& row_key) const override {
-        return std::make_unique<PersistentRowTransaction>(std::move(table), row_key);
-    }
+ protected:
+  std::unique_ptr<RowTransaction> NewRowTransaction(
+      std::shared_ptr<Table> table, std::string const& row_key) const override {
+    return std::make_unique<PersistentRowTransaction>(std::move(table),
+                                                      row_key);
+  }
 
  private:
   PersistentTable() = default;

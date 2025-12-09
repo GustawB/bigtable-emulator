@@ -231,20 +231,20 @@ absl::optional<Cell> ColumnFamilyRow::DeleteTimeStamp(
   return ret;
 }
 
-absl::optional<std::string> ColumnFamily::SetCell(
+absl::optional<std::string> InMemoryColumnFamily::SetCell(
     std::string const& row_key, std::string const& column_qualifier,
     std::chrono::milliseconds timestamp, std::string const& value) {
   return rows_[row_key].SetCell(column_qualifier, timestamp, value);
 }
 
-StatusOr<absl::optional<std::string>> ColumnFamily::UpdateCell(
+StatusOr<absl::optional<std::string>> InMemoryColumnFamily::UpdateCell(
     std::string const& row_key, std::string const& column_qualifier,
     std::chrono::milliseconds timestamp, std::string& value) {
   return rows_[row_key].UpdateCell(column_qualifier, timestamp, value,
                                    update_cell_);
 }
 
-std::map<std::string, std::vector<Cell>> ColumnFamily::DeleteRow(
+std::map<std::string, std::vector<Cell>> InMemoryColumnFamily::DeleteRow(
     std::string const& row_key) {
   std::map<std::string, std::vector<Cell>> res;
 
@@ -267,7 +267,7 @@ std::map<std::string, std::vector<Cell>> ColumnFamily::DeleteRow(
   return res;
 }
 
-std::vector<Cell> ColumnFamily::DeleteColumn(
+std::vector<Cell> InMemoryColumnFamily::DeleteColumn(
     std::string const& row_key, std::string const& column_qualifier,
     ::google::bigtable::v2::TimestampRange const& time_range) {
   auto row_it = rows_.find(row_key);
@@ -275,7 +275,7 @@ std::vector<Cell> ColumnFamily::DeleteColumn(
   return DeleteColumn(row_it, column_qualifier, time_range);
 }
 
-std::vector<Cell> ColumnFamily::DeleteColumn(
+std::vector<Cell> InMemoryColumnFamily::DeleteColumn(
     std::map<std::string, ColumnFamilyRow>::iterator row_it,
     std::string const& column_qualifier,
     ::google::bigtable::v2::TimestampRange const& time_range) {
@@ -290,7 +290,7 @@ std::vector<Cell> ColumnFamily::DeleteColumn(
   return {};
 }
 
-absl::optional<Cell> ColumnFamily::DeleteTimeStamp(
+absl::optional<Cell> InMemoryColumnFamily::DeleteTimeStamp(
     std::string const& row_key, std::string const& column_qualifier,
     std::chrono::milliseconds timestamp) {
   auto row_it = rows_.find(row_key);
@@ -373,14 +373,14 @@ class FilteredColumnFamilyStream::FilterApply {
 };
 
 FilteredColumnFamilyStream::FilteredColumnFamilyStream(
-    ColumnFamily const& column_family, std::string column_family_name,
+    InMemoryColumnFamily const& column_family, std::string column_family_name,
     std::shared_ptr<StringRangeSet const> row_set)
     : column_family_name_(std::move(column_family_name)),
       row_ranges_(std::move(row_set)),
       column_ranges_(StringRangeSet::All()),
       timestamp_ranges_(TimestampRangeSet::All()),
       rows_(
-          StringRangeFilteredMapView<ColumnFamily>(column_family, *row_ranges_),
+          StringRangeFilteredMapView<InMemoryColumnFamily>(column_family, *row_ranges_),
           std::cref(row_regexes_)) {}
 
 bool FilteredColumnFamilyStream::ApplyFilter(
@@ -542,9 +542,9 @@ std::string FilteredPersistentColumnFamilyStream::GetColumnName(
 }
 
 StatusOr<std::shared_ptr<ColumnFamily>>
-ColumnFamily::ConstructAggregateColumnFamily(
+InMemoryColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type) {
-  auto cf = std::make_shared<ColumnFamily>();
+  auto cf = std::make_shared<InMemoryColumnFamily>();
 
   if (value_type.has_aggregate_type()) {
     auto const& aggregate_type = value_type.aggregate_type();
@@ -568,7 +568,7 @@ ColumnFamily::ConstructAggregateColumnFamily(
 
     cf->value_type_ = std::move(value_type);
 
-    return cf;
+    return std::static_pointer_cast<ColumnFamily>(cf);
   }
 
   return InvalidArgumentError(
