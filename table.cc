@@ -551,7 +551,7 @@ StatusOr<CellStream> InMemoryTable::CreateCellStream(
     per_cf_streams.reserve(column_families_.size());
     for (auto const& column_family : column_families_) {
       per_cf_streams.emplace_back(std::make_unique<FilteredColumnFamilyStream>(
-          *std::dynamic_pointer_cast<InMemoryColumnFamily>(
+          *std::static_pointer_cast<InMemoryColumnFamily>(
               column_family.second),
           column_family.first, range_set));
     }
@@ -893,7 +893,7 @@ StatusOr<CellStream> PersistentTable::CreateCellStream(
     for (auto const& handle : column_families_) {
       per_cf_streams.emplace_back(
           std::make_unique<FilteredPersistentColumnFamilyStream>(
-              std::dynamic_pointer_cast<PersistentColumnFamily>(handle.second)
+              std::static_pointer_cast<PersistentColumnFamily>(handle.second)
                   ->GetHandle(),
               handle.first, db_));
     }
@@ -930,7 +930,7 @@ bool FilteredTableStream::ApplyFilter(InternalFilter const& internal_filter) {
   for (auto stream_it = unfinished_streams_.begin();
        stream_it != unfinished_streams_.end();) {
     auto* cf_stream =
-        dynamic_cast<FilteredColumnFamilyStream*>(&(*stream_it)->impl());
+        static_cast<FilteredColumnFamilyStream*>(&(*stream_it)->impl());
     assert(cf_stream);
 
     if ((absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
@@ -1240,7 +1240,7 @@ Status InMemoryTable::DropRowRange(
 
   if (request.has_delete_all_data_from_table()) {
     for (auto& column_family : column_families_) {
-      std::dynamic_pointer_cast<InMemoryColumnFamily>(column_family.second)
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family.second)
           ->clear();
     }
 
@@ -1386,7 +1386,7 @@ Status InMemoryRowTransaction::PerformAddToCell(
     ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
     std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
     std::string& value) {
-  auto ccf = std::dynamic_pointer_cast<InMemoryColumnFamily>(cf);
+  auto ccf = std::static_pointer_cast<InMemoryColumnFamily>(cf);
   auto column_qualifier = add_to_cell.column_qualifier().raw_value();
   auto maybe_old_value =
       ccf->UpdateCell(row_key_, column_qualifier, ts_ms, value);
@@ -1410,7 +1410,7 @@ Status PersistentRowTransaction::PerformAddToCell(
     std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
     std::string& value) {
   rocksdb::Status merge_status = txn_.Merge(
-      std::dynamic_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr(),
+      std::static_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr(),
       row_key_, TimestampToHexString(ts_ms.count()), value);
   if (!merge_status.ok()) {
     return InternalError(
@@ -1461,7 +1461,7 @@ Status InMemoryRowTransaction::DeleteFromColumn(
     }
   }
 
-  auto column_family = std::dynamic_pointer_cast<InMemoryColumnFamily>(
+  auto column_family = std::static_pointer_cast<InMemoryColumnFamily>(
       maybe_column_family.value());
 
   auto deleted_cells = column_family->DeleteColumn(
@@ -1522,7 +1522,7 @@ Status InMemoryRowTransaction::DeleteFromFamily(
 
   std::map<std::string, ColumnFamilyRow>::iterator column_family_row_it;
   auto ccf =
-      std::dynamic_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   if (ccf->find(row_key_) == ccf->end()) {
     // The row does not exist
     return NotFoundError(
@@ -1583,7 +1583,7 @@ Status InMemoryRowTransaction::SetCell(
 }
 
 Status PersistentRowTransaction::commit() {
-  auto persistent_table = std::dynamic_pointer_cast<PersistentTable>(table_);
+  auto persistent_table = std::static_pointer_cast<PersistentTable>(table_);
   rocksdb::Status status =
       persistent_table->ToRawPtr()->Write(rocksdb::WriteOptions(), &txn_);
   if (!status.ok()) {
@@ -1736,7 +1736,7 @@ InMemoryRowTransaction::ReadModifyWriteRow(
       return maybe_column_family.status();
     }
 
-    auto column_family = std::dynamic_pointer_cast<InMemoryColumnFamily>(
+    auto column_family = std::static_pointer_cast<InMemoryColumnFamily>(
         maybe_column_family.value());
     if (rule.has_append_value()) {
       auto result = column_family->ReadModifyWrite(
