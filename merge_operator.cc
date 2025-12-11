@@ -12,17 +12,15 @@ namespace emulator {
 namespace {
 template <typename Op>
 bool MergeCell(rocksdb::Slice const* existing_value,
-               rocksdb::Slice const& value,
-               std::string* new_value,
-               rocksdb::Logger* logger,
-               int64_t default_if_missing,
+               rocksdb::Slice const& value, std::string* new_value,
+               rocksdb::Logger* logger, int64_t default_if_missing,
                Op operation) {
-
   int64_t existing_int = default_if_missing;
 
   if (existing_value) {
-    auto maybe_existing = google::cloud::internal::DecodeBigEndian<std::int64_t>(
-        existing_value->ToString());
+    auto maybe_existing =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(
+            existing_value->ToString());
     if (!maybe_existing) {
       rocksdb::Log(logger, "Failed to decode current value during merge");
       return false;
@@ -30,8 +28,8 @@ bool MergeCell(rocksdb::Slice const* existing_value,
     existing_int = maybe_existing.value();
   }
 
-  auto maybe_new = google::cloud::internal::DecodeBigEndian<std::int64_t>(
-      value.ToString());
+  auto maybe_new =
+      google::cloud::internal::DecodeBigEndian<std::int64_t>(value.ToString());
   if (!maybe_new) {
     rocksdb::Log(logger, "Failed to decode new value during merge");
     return false;
@@ -43,16 +41,14 @@ bool MergeCell(rocksdb::Slice const* existing_value,
   return true;
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 bool SumUpdateCellBEInt64::Merge(rocksdb::Slice const& key,
                                  rocksdb::Slice const* existing_value,
                                  rocksdb::Slice const& value,
                                  std::string* new_value,
                                  rocksdb::Logger* logger) const {
-  return MergeCell(existing_value, value, new_value, logger,
-                   0,
-                   std::plus<>());
+  return MergeCell(existing_value, value, new_value, logger, 0, std::plus<>());
 }
 
 bool MaxUpdateCellBEInt64::Merge(rocksdb::Slice const& key,

@@ -100,6 +100,135 @@ Status Table::PrepareSchema() {
   return Status();
 }
 
+Status InMemoryTable::SampleRowKeys(
+    double pass_probability,
+    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
+  if (pass_probability <= 0.0) {
+    return InvalidArgumentError(
+        "The sampling probabality must be positive",
+        GCP_ERROR_INFO().WithMetadata("provided sampling probability",
+                                      absl::StrFormat("%f", pass_probability)));
+  }
+
+  auto sample_every =
+      static_cast<std::uint64_t>(std::ceil(1.0 / pass_probability));
+
+  std::lock_guard<std::mutex> lock(mu_);
+
+  // First, stream all rows and cells and compute the offsets.
+  auto all_rows_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
+  auto maybe_all_rows_stream = CreateCellStream(all_rows_set, absl::nullopt);
+  if (!maybe_all_rows_stream) {
+    return maybe_all_rows_stream.status();
+  }
+
+  auto& stream = *maybe_all_rows_stream;
+
+  absl::optional<std::string> first_row_key;
+  // The first row read will be used as a constant estimate of row
+  // sizes. If we are sampling 1/n rows, the value added to the offset
+  // (which is to be regarded as the size of all the rows before the
+  // sampled one) will be (n * row_size_estimate).
+  //
+  // That is every time a row is sampled, we do: offset += (n *
+  // row_size_estimate).
+  std::size_t row_size_estimate = 0;
+
+  for (; stream; ++stream) {
+    if (first_row_key.has_value() &&
+        stream->row_key() != first_row_key.value()) {
+      break;
+    }
+
+    first_row_key = stream->row_key();
+
+    row_size_estimate += stream->row_key().size();
+    row_size_estimate += stream->column_qualifier().size();
+    row_size_estimate += stream->value().size();
+    row_size_estimate += sizeof(stream->timestamp());
+  }
+
+  if (!first_row_key.has_value()) {
+    // No rows in the table
+    google::bigtable::v2::SampleRowKeysResponse resp;
+    resp.set_row_key("");
+    resp.set_offset_bytes(0);
+
+    auto opts = grpc::WriteOptions();
+    opts.set_last_message();
+
+    writer->WriteLast(std::move(resp), opts);
+    return Status();
+  }
+
+  std::int64_t offset_delta = sample_every * row_size_estimate;
+
+  google::bigtable::v2::RowFilter sample_filter;
+  sample_filter.set_row_sample_filter(pass_probability);
+
+  auto maybe_stream = CreateCellStream(all_rows_set, sample_filter);
+  if (!maybe_stream) {
+    return maybe_stream.status();
+  }
+
+  auto& sampled_stream = *maybe_stream;
+
+  std::int64_t offset = 0;
+
+  bool wrote_a_sample;
+
+  for (; sampled_stream; sampled_stream.Next(NextMode::kRow)) {
+    google::bigtable::v2::SampleRowKeysResponse resp;
+    offset += offset_delta;
+    resp.set_row_key(sampled_stream->row_key());
+    resp.set_offset_bytes(offset);
+
+    writer->Write(std::move(resp));
+
+    wrote_a_sample = true;
+  }
+
+  // Cloud bigtable client tests expect that, if they populated the
+  // table with at least one row, then at least one row sample is
+  // returned.
+  //
+  // In such a case, return any string that represents the last key,
+  // and an offset that is the estimated row size * the number of rows
+  // in the largest column family. We can return any string because
+  // the keys returned need not be in the table. See the proto
+  // specification.
+  if (!wrote_a_sample) {
+    std::size_t row_count_estimate = 0;
+
+    for (auto const& cf : *get()) {
+      auto ccf = std::static_pointer_cast<InMemoryColumnFamily>(cf.second);
+      if (ccf->size() > row_count_estimate) {
+        row_count_estimate = ccf->size();
+      }
+    }
+
+    std::int64_t this_offset = row_count_estimate * row_size_estimate;
+
+    google::bigtable::v2::SampleRowKeysResponse resp;
+    resp.set_row_key("last_key");
+    resp.set_offset_bytes(this_offset);
+    writer->Write(std::move(resp));
+
+    offset += this_offset;
+  }
+
+  google::bigtable::v2::SampleRowKeysResponse resp;
+  resp.set_row_key("");
+  // Client test code expects offset_bytes to be strictly
+  // increasing.
+  resp.set_offset_bytes(offset + 1);
+  auto opts = grpc::WriteOptions();
+  opts.set_last_message();
+  writer->WriteLast(std::move(resp), opts);
+
+  return Status();
+}
+
 StatusOr<std::shared_ptr<Table>> InMemoryTable::Create(
     google::bigtable::admin::v2::Table schema) {
   std::shared_ptr<InMemoryTable> res(new InMemoryTable);
@@ -131,14 +260,14 @@ Status InMemoryTable::Construct(google::bigtable::admin::v2::Table schema) {
 
     if (opt_value_type.has_value()) {
       auto cf =
-          ColumnFamily::ConstructAggregateColumnFamily(opt_value_type.value());
+          InMemoryColumnFamily::ConstructAggregateColumnFamily(opt_value_type.value());
       if (!cf) {
         return cf.status();
       }
       column_families_.emplace(column_family_def.first, cf.value());
     } else {
       column_families_.emplace(column_family_def.first,
-                               std::make_shared<ColumnFamily>());
+                               std::make_shared<InMemoryColumnFamily>());
     }
   }
 
@@ -222,13 +351,13 @@ StatusOr<btadmin::Table> InMemoryTable::ModifyColumnFamilies(
       if (modification.create().has_value_type()) {
         auto value_type = modification.create().value_type();
         auto maybe_cf =
-            ColumnFamily::ConstructAggregateColumnFamily(value_type);
+            InMemoryColumnFamily::ConstructAggregateColumnFamily(value_type);
         if (!maybe_cf) {
           return maybe_cf.status();
         }
         cf = std::move(maybe_cf.value());
       } else {
-        cf = std::make_shared<ColumnFamily>();
+        cf = std::make_shared<InMemoryColumnFamily>();
       }
       if (!new_column_families.emplace(modification.id(), cf).second) {
         return AlreadyExistsError(
@@ -296,7 +425,7 @@ Status InMemoryTable::Update(
 }
 
 template <typename MESSAGE>
-StatusOr<std::reference_wrapper<ColumnFamily>> InMemoryTable::FindColumnFamily(
+StatusOr<std::shared_ptr<ColumnFamily>> Table::FindColumnFamily(
     MESSAGE const& message) const {
   auto column_family_it = column_families_.find(message.family_name());
   if (column_family_it == column_families_.end()) {
@@ -304,7 +433,7 @@ StatusOr<std::reference_wrapper<ColumnFamily>> InMemoryTable::FindColumnFamily(
         "No such column family.",
         GCP_ERROR_INFO().WithMetadata("mutation", message.DebugString()));
   }
-  return std::ref(*column_family_it->second);
+  return column_family_it->second;
 }
 
 Status InMemoryTable::MutateRow(
@@ -313,18 +442,6 @@ Status InMemoryTable::MutateRow(
 
   return DoMutationsWithPossibleRollback(request.row_key(),
                                          request.mutations());
-}
-
-template <typename MESSAGE>
-StatusOr<std::reference_wrapper<PersistentColumnFamily>>
-PersistentTable::FindColumnFamily(MESSAGE const& message) const {
-  auto column_family_it = handles_.find(message.family_name());
-  if (column_family_it == handles_.end()) {
-    return NotFoundError(
-        "No such column family.",
-        GCP_ERROR_INFO().WithMetadata("mutation", message.DebugString()));
-  }
-  return std::ref(*column_family_it->second);
 }
 
 // NOLINTBEGIN(readability-function-cognitive-complexity)
@@ -339,7 +456,8 @@ Status InMemoryTable::DoMutationsWithPossibleRollback(
                                       absl::StrFormat("%zu", row_key.size())));
   }
 
-  RowTransaction row_transaction(this->get(), row_key);
+  std::unique_ptr<RowTransaction> row_transaction =
+      NewRowTransaction(this->get(), row_key);
 
   for (auto const& mutation : mutations) {
     if (mutation.has_set_cell()) {
@@ -360,7 +478,7 @@ Status InMemoryTable::DoMutationsWithPossibleRollback(
                 std::chrono::system_clock::now().time_since_epoch()));
       }
 
-      auto status = row_transaction.SetCell(set_cell, timestamp_override);
+      auto status = row_transaction->SetCell(set_cell, timestamp_override);
       if (!status.ok()) {
         return status;
       }
@@ -386,7 +504,7 @@ Status InMemoryTable::DoMutationsWithPossibleRollback(
         timestamp_override.emplace(std::move(timestamp));
       }
 
-      auto status = row_transaction.AddToCell(add_to_cell, timestamp_override);
+      auto status = row_transaction->AddToCell(add_to_cell, timestamp_override);
       if (!status.ok()) {
         return status;
       }
@@ -396,18 +514,18 @@ Status InMemoryTable::DoMutationsWithPossibleRollback(
           GCP_ERROR_INFO().WithMetadata("mutation", mutation.DebugString()));
     } else if (mutation.has_delete_from_column()) {
       auto const& delete_from_column = mutation.delete_from_column();
-      auto status = row_transaction.DeleteFromColumn(delete_from_column);
+      auto status = row_transaction->DeleteFromColumn(delete_from_column);
       if (!status.ok()) {
         return status;
       }
     } else if (mutation.has_delete_from_family()) {
       auto const& delete_from_family = mutation.delete_from_family();
-      auto status = row_transaction.DeleteFromFamily(delete_from_family);
+      auto status = row_transaction->DeleteFromFamily(delete_from_family);
       if (!status.ok()) {
         return status;
       }
     } else if (mutation.has_delete_from_row()) {
-      auto status = row_transaction.DeleteFromRow();
+      auto status = row_transaction->DeleteFromRow();
       if (!status.ok()) {
         return status;
       }
@@ -421,9 +539,7 @@ Status InMemoryTable::DoMutationsWithPossibleRollback(
   // If we get here, all mutations on the row have succeeded. We can
   // commit and return which will prevent the destructor from undoing
   // the transaction.
-  row_transaction.commit();
-
-  return Status();
+  return row_transaction->commit();
 }
 // NOLINTEND(readability-function-cognitive-complexity)
 
@@ -435,7 +551,9 @@ StatusOr<CellStream> InMemoryTable::CreateCellStream(
     per_cf_streams.reserve(column_families_.size());
     for (auto const& column_family : column_families_) {
       per_cf_streams.emplace_back(std::make_unique<FilteredColumnFamilyStream>(
-          *column_family.second, column_family.first, range_set));
+          *std::static_pointer_cast<InMemoryColumnFamily>(
+              column_family.second),
+          column_family.first, range_set));
     }
     return CellStream(
         std::make_unique<FilteredTableStream>(std::move(per_cf_streams)));
@@ -505,7 +623,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
       if (!new_cf) {
         return new_cf.status();
       }
-      res->handles_.emplace(cfd.first, new_cf.value());
+      res->column_families_.emplace(cfd.first, new_cf.value());
     } else {
       // TODO: handle opts
       rocksdb::ColumnFamilyOptions opts;
@@ -517,7 +635,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
                 "; Error status: " + status.ToString(),
             GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString()));
       }
-      res->handles_.emplace(cfd.first, maybe_new_cf.value());
+      res->column_families_.emplace(cfd.first, maybe_new_cf.value());
     }
   }
 
@@ -542,7 +660,7 @@ PersistentTable::ModifyColumnFamilies(
             << std::endl;
   std::unique_lock<std::mutex> lock(mu_);
   auto new_schema = schema_;
-  auto new_handles = handles_;
+  auto new_handles = column_families_;
   for (auto const& modification : request.modifications()) {
     if (modification.drop()) {
       if (schema_.deletion_protection()) {
@@ -655,7 +773,7 @@ PersistentTable::ModifyColumnFamilies(
     }
   }
   // Defer destroying potentially large objects to after releasing the lock.
-  handles_.swap(new_handles);
+  column_families_.swap(new_handles);
   schema_ = new_schema;
   lock.unlock();
   return new_schema;
@@ -771,11 +889,13 @@ StatusOr<CellStream> PersistentTable::CreateCellStream(
   auto table_stream_ctor = [range_set = std::move(range_set), this] {
     std::vector<std::unique_ptr<FilteredPersistentColumnFamilyStream>>
         per_cf_streams;
-    per_cf_streams.reserve(handles_.size());
-    for (auto const& handle : handles_) {
+    per_cf_streams.reserve(column_families_.size());
+    for (auto const& handle : column_families_) {
       per_cf_streams.emplace_back(
           std::make_unique<FilteredPersistentColumnFamilyStream>(
-              handle.second->GetHandle(), handle.first, db_));
+              std::static_pointer_cast<PersistentColumnFamily>(handle.second)
+                  ->GetHandle(),
+              handle.first, db_));
     }
     return CellStream(std::make_unique<FilteredPersistentTableStream>(
         std::move(per_cf_streams)));
@@ -790,14 +910,14 @@ PersistentTable::ReadModifyWriteRow(
   return Status();
 }
 
-Status PersistentTable::SampleRowKeys(
-    double pass_probability,
-    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
+Status PersistentTable::DropRowRange(
+    ::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
   return Status();
 }
 
-Status PersistentTable::DropRowRange(
-    ::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
+Status PersistentTable::SampleRowKeys(
+    double pass_probability,
+    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
   return Status();
 }
 
@@ -810,7 +930,7 @@ bool FilteredTableStream::ApplyFilter(InternalFilter const& internal_filter) {
   for (auto stream_it = unfinished_streams_.begin();
        stream_it != unfinished_streams_.end();) {
     auto* cf_stream =
-        dynamic_cast<FilteredColumnFamilyStream*>(&(*stream_it)->impl());
+        static_cast<FilteredColumnFamilyStream*>(&(*stream_it)->impl());
     assert(cf_stream);
 
     if ((absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
@@ -1106,134 +1226,6 @@ bool InMemoryTable::IsDeleteProtectedNoLock() const {
   return schema_.deletion_protection();
 }
 
-Status InMemoryTable::SampleRowKeys(
-    double pass_probability,
-    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
-  if (pass_probability <= 0.0) {
-    return InvalidArgumentError(
-        "The sampling probabality must be positive",
-        GCP_ERROR_INFO().WithMetadata("provided sampling probability",
-                                      absl::StrFormat("%f", pass_probability)));
-  }
-
-  auto sample_every =
-      static_cast<std::uint64_t>(std::ceil(1.0 / pass_probability));
-
-  std::lock_guard<std::mutex> lock(mu_);
-
-  // First, stream all rows and cells and compute the offsets.
-  auto all_rows_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
-  auto maybe_all_rows_stream = CreateCellStream(all_rows_set, absl::nullopt);
-  if (!maybe_all_rows_stream) {
-    return maybe_all_rows_stream.status();
-  }
-
-  auto& stream = *maybe_all_rows_stream;
-
-  absl::optional<std::string> first_row_key;
-  // The first row read will be used as a constant estimate of row
-  // sizes. If we are sampling 1/n rows, the value added to the offset
-  // (which is to be regarded as the size of all the rows before the
-  // sampled one) will be (n * row_size_estimate).
-  //
-  // That is every time a row is sampled, we do: offset += (n *
-  // row_size_estimate).
-  std::size_t row_size_estimate = 0;
-
-  for (; stream; ++stream) {
-    if (first_row_key.has_value() &&
-        stream->row_key() != first_row_key.value()) {
-      break;
-    }
-
-    first_row_key = stream->row_key();
-
-    row_size_estimate += stream->row_key().size();
-    row_size_estimate += stream->column_qualifier().size();
-    row_size_estimate += stream->value().size();
-    row_size_estimate += sizeof(stream->timestamp());
-  }
-
-  if (!first_row_key.has_value()) {
-    // No rows in the table
-    google::bigtable::v2::SampleRowKeysResponse resp;
-    resp.set_row_key("");
-    resp.set_offset_bytes(0);
-
-    auto opts = grpc::WriteOptions();
-    opts.set_last_message();
-
-    writer->WriteLast(std::move(resp), opts);
-    return Status();
-  }
-
-  std::int64_t offset_delta = sample_every * row_size_estimate;
-
-  google::bigtable::v2::RowFilter sample_filter;
-  sample_filter.set_row_sample_filter(pass_probability);
-
-  auto maybe_stream = CreateCellStream(all_rows_set, sample_filter);
-  if (!maybe_stream) {
-    return maybe_stream.status();
-  }
-
-  auto& sampled_stream = *maybe_stream;
-
-  std::int64_t offset = 0;
-
-  bool wrote_a_sample;
-
-  for (; sampled_stream; sampled_stream.Next(NextMode::kRow)) {
-    google::bigtable::v2::SampleRowKeysResponse resp;
-    offset += offset_delta;
-    resp.set_row_key(sampled_stream->row_key());
-    resp.set_offset_bytes(offset);
-
-    writer->Write(std::move(resp));
-
-    wrote_a_sample = true;
-  }
-
-  // Cloud bigtable client tests expect that, if they populated the
-  // table with at least one row, then at least one row sample is
-  // returned.
-  //
-  // In such a case, return any string that represents the last key,
-  // and an offset that is the estimated row size * the number of rows
-  // in the largest column family. We can return any string because
-  // the keys returned need not be in the table. See the proto
-  // specification.
-  if (!wrote_a_sample) {
-    std::size_t row_count_estimate = 0;
-
-    for (auto const& cf : *get()) {
-      if (cf.second->size() > row_count_estimate) {
-        row_count_estimate = cf.second->size();
-      }
-    }
-
-    std::int64_t this_offset = row_count_estimate * row_size_estimate;
-
-    google::bigtable::v2::SampleRowKeysResponse resp;
-    resp.set_row_key("last_key");
-    resp.set_offset_bytes(this_offset);
-    writer->Write(std::move(resp));
-
-    offset += this_offset;
-  }
-
-  google::bigtable::v2::SampleRowKeysResponse resp;
-  resp.set_row_key("");
-  // Client test code expects offset_bytes to be strictly
-  // increasing.
-  resp.set_offset_bytes(offset + 1);
-  auto opts = grpc::WriteOptions();
-  opts.set_last_message();
-  writer->WriteLast(std::move(resp), opts);
-
-  return Status();
-}
-
 Status InMemoryTable::DropRowRange(
     ::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
   std::lock_guard<std::mutex> lock(mu_);
@@ -1248,7 +1240,8 @@ Status InMemoryTable::DropRowRange(
 
   if (request.has_delete_all_data_from_table()) {
     for (auto& column_family : column_families_) {
-      column_family.second->clear();
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family.second)
+          ->clear();
     }
 
     return Status();
@@ -1270,10 +1263,11 @@ Status InMemoryTable::DropRowRange(
   }
 
   for (auto& cf : column_families_) {
-    for (auto row_it = cf.second->lower_bound(row_key_prefix);
-         row_it != cf.second->end();) {
+    auto ccf = std::static_pointer_cast<InMemoryColumnFamily>(cf.second);
+    for (auto row_it = ccf->lower_bound(row_key_prefix);
+         row_it != ccf->end();) {
       if (absl::StartsWith(row_it->first, row_key_prefix)) {
-        row_it = cf.second->erase(row_it);
+        row_it = ccf->erase(row_it);
       } else {
         break;
       }
@@ -1295,14 +1289,15 @@ InMemoryTable::ReadModifyWriteRow(
 
   std::lock_guard<std::mutex> lock(mu_);
 
-  RowTransaction row_transaction(this->get(), request.row_key());
+  std::unique_ptr<RowTransaction> row_transaction =
+      NewRowTransaction(this->get(), request.row_key());
 
-  auto maybe_response = row_transaction.ReadModifyWriteRow(request);
+  auto maybe_response = row_transaction->ReadModifyWriteRow(request);
   if (!maybe_response) {
     return maybe_response.status();
   }
 
-  row_transaction.commit();
+  row_transaction->commit();
 
   return std::move(maybe_response.value());
 }
@@ -1316,8 +1311,8 @@ Status RowTransaction::AddToCell(
     return status.status();
   }
 
-  auto& cf = status->get();
-  auto cf_value_type = cf.GetValueType();
+  auto cf = status.value();
+  auto cf_value_type = cf->GetValueType();
   if (!cf_value_type.has_value() ||
       !cf_value_type.value().has_aggregate_type()) {
     return InvalidArgumentError(
@@ -1367,7 +1362,6 @@ Status RowTransaction::AddToCell(
   auto int64_input = add_to_cell.input().int_value();
 
   auto value = google::cloud::internal::EncodeBigEndian(int64_input);
-  auto row_key = row_key_;
 
   std::chrono::milliseconds ts_ms;
   if (timestamp_override.has_value()) {
@@ -1384,20 +1378,44 @@ Status RowTransaction::AddToCell(
         "column qualifier not set",
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
   }
-  auto column_qualifier = add_to_cell.column_qualifier().raw_value();
 
-  auto maybe_old_value = cf.UpdateCell(row_key, column_qualifier, ts_ms, value);
+  return PerformAddToCell(add_to_cell, std::move(cf), ts_ms, value);
+}
+
+Status InMemoryRowTransaction::PerformAddToCell(
+    ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+    std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
+    std::string& value) {
+  auto ccf = std::static_pointer_cast<InMemoryColumnFamily>(cf);
+  auto column_qualifier = add_to_cell.column_qualifier().raw_value();
+  auto maybe_old_value =
+      ccf->UpdateCell(row_key_, column_qualifier, ts_ms, value);
   if (!maybe_old_value) {
     return maybe_old_value.status();
   }
 
   if (!maybe_old_value.value()) {
-    DeleteValue delete_value{cf, std::move(column_qualifier), ts_ms};
+    DeleteValue delete_value{*ccf, std::move(column_qualifier), ts_ms};
     undo_.emplace(std::move(delete_value));
   } else {
-    RestoreValue restore_value{cf, std::move(column_qualifier), ts_ms,
+    RestoreValue restore_value{*ccf, std::move(column_qualifier), ts_ms,
                                std::move(maybe_old_value.value().value())};
     undo_.emplace(std::move(restore_value));
+  }
+  return Status();
+}
+
+Status PersistentRowTransaction::PerformAddToCell(
+    ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
+    std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
+    std::string& value) {
+  rocksdb::Status merge_status = txn_.Merge(
+      std::static_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr(),
+      row_key_, TimestampToHexString(ts_ms.count()), value);
+  if (!merge_status.ok()) {
+    return InternalError(
+        "Failed to add to cell",
+        GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
   }
 
   return Status();
@@ -1411,7 +1429,7 @@ Status RowTransaction::MergeToCell(
 }
 // NOLINTEND(readability-convert-member-functions-to-static)
 
-Status RowTransaction::DeleteFromColumn(
+Status InMemoryRowTransaction::DeleteFromColumn(
     ::google::bigtable::v2::Mutation_DeleteFromColumn const&
         delete_from_column) {
   auto maybe_column_family = table_->FindColumnFamily(delete_from_column);
@@ -1443,15 +1461,16 @@ Status RowTransaction::DeleteFromColumn(
     }
   }
 
-  auto& column_family = maybe_column_family->get();
+  auto column_family = std::static_pointer_cast<InMemoryColumnFamily>(
+      maybe_column_family.value());
 
-  auto deleted_cells = column_family.DeleteColumn(
+  auto deleted_cells = column_family->DeleteColumn(
       row_key_, delete_from_column.column_qualifier(),
       delete_from_column.time_range());
 
   for (auto& cell : deleted_cells) {
     RestoreValue restore_value{
-        column_family, delete_from_column.column_qualifier(),
+        *column_family, delete_from_column.column_qualifier(),
         std::move(cell.timestamp), std::move(cell.value)};
     undo_.emplace(std::move(restore_value));
   }
@@ -1459,7 +1478,7 @@ Status RowTransaction::DeleteFromColumn(
   return Status();
 }
 
-Status RowTransaction::DeleteFromRow() {
+Status InMemoryRowTransaction::DeleteFromRow() {
   bool row_existed;
   for (auto& column_family : table_->column_families_) {
     auto deleted_columns = column_family.second->DeleteRow(row_key_);
@@ -1483,7 +1502,7 @@ Status RowTransaction::DeleteFromRow() {
                        GCP_ERROR_INFO().WithMetadata("row", row_key_));
 }
 
-Status RowTransaction::DeleteFromFamily(
+Status InMemoryRowTransaction::DeleteFromFamily(
     ::google::bigtable::v2::Mutation_DeleteFromFamily const&
         delete_from_family) {
   // If the request references an incorrect schema (non-existent
@@ -1502,8 +1521,9 @@ Status RowTransaction::DeleteFromFamily(
   }
 
   std::map<std::string, ColumnFamilyRow>::iterator column_family_row_it;
-  if (column_family_it->second->find(row_key_) ==
-      column_family_it->second->end()) {
+  auto ccf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
+  if (ccf->find(row_key_) == ccf->end()) {
     // The row does not exist
     return NotFoundError(
         "row key is not found in column family",
@@ -1528,7 +1548,7 @@ Status RowTransaction::DeleteFromFamily(
 // timestamp_override, if provided, will be used instead of
 // set_cell.timestamp. The override is used to set the timestamp to
 // the server time in case a timestamp <= 0 is provided.
-Status RowTransaction::SetCell(
+Status InMemoryRowTransaction::SetCell(
     ::google::bigtable::v2::Mutation_SetCell const& set_cell,
     absl::optional<std::chrono::milliseconds> timestamp_override) {
   auto maybe_column_family = table_->FindColumnFamily(set_cell);
@@ -1536,7 +1556,7 @@ Status RowTransaction::SetCell(
     return maybe_column_family.status();
   }
 
-  auto& column_family = maybe_column_family->get();
+  auto column_family = maybe_column_family.value();
 
   auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::microseconds(set_cell.timestamp_micros()));
@@ -1545,15 +1565,15 @@ Status RowTransaction::SetCell(
     timestamp = timestamp_override.value();
   }
 
-  auto maybe_old_value = column_family.SetCell(
+  auto maybe_old_value = column_family->SetCell(
       row_key_, set_cell.column_qualifier(), timestamp, set_cell.value());
 
   if (!maybe_old_value) {
-    DeleteValue delete_value{column_family,
+    DeleteValue delete_value{*column_family,
                              std::move(set_cell.column_qualifier()), timestamp};
     undo_.emplace(std::move(delete_value));
   } else {
-    RestoreValue restore_value{column_family,
+    RestoreValue restore_value{*column_family,
                                std::move(set_cell.column_qualifier()),
                                timestamp, std::move(maybe_old_value.value())};
     undo_.emplace(std::move(restore_value));
@@ -1563,12 +1583,14 @@ Status RowTransaction::SetCell(
 }
 
 Status PersistentRowTransaction::commit() {
+  auto persistent_table = std::static_pointer_cast<PersistentTable>(table_);
   rocksdb::Status status =
-      table_->ToRawPtr()->Write(rocksdb::WriteOptions(), &txn_);
+      persistent_table->ToRawPtr()->Write(rocksdb::WriteOptions(), &txn_);
   if (!status.ok()) {
     return InvalidArgumentError(
         "Failed to commit the transaction: " + status.ToString(),
-        GCP_ERROR_INFO().WithMetadata("table", table_->ToRawPtr()->GetName()));
+        GCP_ERROR_INFO().WithMetadata("table",
+                                      persistent_table->ToRawPtr()->GetName()));
   }
   return Status();
 }
@@ -1581,7 +1603,8 @@ Status PersistentRowTransaction::SetCell(
     return maybe_column_family.status();
   }
 
-  PersistentColumnFamily& column_family = maybe_column_family->get();
+  auto column_family = std::static_pointer_cast<PersistentColumnFamily>(
+      maybe_column_family.value());
 
   auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::microseconds(set_cell.timestamp_micros()));
@@ -1591,115 +1614,21 @@ Status PersistentRowTransaction::SetCell(
   }
 
   std::cout << "Writing to column family: "
-            << column_family.ToRawPtr()->GetName() << "; row key: " << row_key_
+            << column_family->ToRawPtr()->GetName() << "; row key: " << row_key_
             << "; column: " << set_cell.column_qualifier()
             << "; value: " << set_cell.value() << std::endl;
 
   rocksdb::Status status = txn_.Put(
-      column_family.ToRawPtr(), row_key_ + ':' + set_cell.column_qualifier(),
+      column_family->ToRawPtr(), row_key_ + ':' + set_cell.column_qualifier(),
       absl::StrFormat("%016x", timestamp.count()), set_cell.value());
 
   if (!status.ok()) {
     return InternalError(
         "Failed to put write into the transaction; " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("column_family",
-                                      column_family.ToRawPtr()->GetName()));
+                                      column_family->ToRawPtr()->GetName()));
   }
   return Status();
-}
-
-Status PersistentRowTransaction::AddToCell(
-    ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
-    absl::optional<std::chrono::milliseconds> timestamp_override) {
-  auto status = table_->FindColumnFamily(add_to_cell);
-  if (!status.ok()) {
-    return status.status();
-  }
-
-  auto& cf = status->get();
-  auto cf_value_type = cf.GetValueType();
-  if (!cf_value_type.has_value() ||
-      !cf_value_type.value().has_aggregate_type()) {
-    return InvalidArgumentError(
-        "column family is not configured to contain aggregation cells or "
-        "aggregation type not properly configured",
-        GCP_ERROR_INFO().WithMetadata("column family",
-                                      add_to_cell.family_name()));
-  }
-
-  switch (cf_value_type.value().aggregate_type().aggregator_case()) {
-    case google::bigtable::admin::v2::Type::Aggregate::kSum:
-    case google::bigtable::admin::v2::Type::Aggregate::kMin:
-    case google::bigtable::admin::v2::Type::Aggregate::kMax:
-      break;
-    default:
-      return UnimplementedError(
-          "column family configured with unimplemented aggregation",
-          GCP_ERROR_INFO()
-              .WithMetadata("column family", add_to_cell.family_name())
-              .WithMetadata("configured aggregation",
-                            absl::StrFormat("%d", cf_value_type.value()
-                                                      .aggregate_type()
-                                                      .aggregator_case())));
-  }
-
-  if (!add_to_cell.has_input()) {
-    return InvalidArgumentError(
-        "input not set",
-        GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
-  }
-
-  switch (add_to_cell.input().kind_case()) {
-    case google::bigtable::v2::Value::kIntValue:
-      if (!add_to_cell.input().has_int_value()) {
-        return InvalidArgumentError("input value not set",
-                                    GCP_ERROR_INFO().WithMetadata(
-                                        "mutation", add_to_cell.DebugString()));
-      }
-      break;
-    default:
-      return InvalidArgumentError(
-          "only int64 values are supported",
-          GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
-  }
-  auto int64_input = add_to_cell.input().int_value();
-
-  auto value = google::cloud::internal::EncodeBigEndian(int64_input);
-  auto row_key = row_key_;
-
-  std::chrono::milliseconds ts_ms;
-  if (timestamp_override.has_value()) {
-    ts_ms = timestamp_override.value();
-  } else {
-    ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::microseconds(
-            add_to_cell.timestamp().raw_timestamp_micros()));
-  }
-
-  if (!add_to_cell.has_column_qualifier() ||
-      !add_to_cell.column_qualifier().has_raw_value()) {
-    return InvalidArgumentError(
-        "column qualifier not set",
-        GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
-  }
-  auto column_qualifier = add_to_cell.column_qualifier().raw_value();
-
-  rocksdb::Status merge_status = txn_.Merge(
-      cf.ToRawPtr(), row_key, TimestampToHexString(ts_ms.count()), value);
-  if (!merge_status.ok()) {
-    return InternalError(
-        "Failed to add to cell",
-        GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
-  }
-
-  return Status();
-}
-
-Status PersistentRowTransaction::MergeToCell(
-    ::google::bigtable::v2::Mutation_MergeToCell const& merge_to_cell) {
-  return UnimplementedError(
-      "Unsupported mutation type.",
-      GCP_ERROR_INFO().WithMetadata("mutation", merge_to_cell.DebugString()));
 }
 
 Status PersistentRowTransaction::DeleteFromColumn(
@@ -1721,25 +1650,32 @@ Status PersistentRowTransaction::DeleteFromFamily(
   return Status();
 }
 
+StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
+PersistentRowTransaction::ReadModifyWriteRow(
+    google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
+  return Status();
+}
+
 // ProcessReadModifyWriteRuleResult records the result of a
 // ReadModifyWriteRule computation for possible undo in the undo log
 // and also updates the tmp_families temporary table (containing only
 // one row) with the modified cell for later return.
 void ProcessReadModifyWriteResult(
-    ColumnFamily& column_family, std::string const& row_key,
+    std::shared_ptr<InMemoryColumnFamily>& column_family,
+    std::string const& row_key,
     std::stack<absl::variant<DeleteValue, RestoreValue>>& undo,
     google::bigtable::v2::ReadModifyWriteRule const& rule,
     ReadModifyWriteCellResult& result,
-    std::map<std::string, ColumnFamily>& tmp_families) {
+    std::map<std::string, InMemoryColumnFamily>& tmp_families) {
   if (result.maybe_old_value.has_value()) {
     // We overwrote a cell, we need to record a RestoreValue in the undo log
-    RestoreValue restore_value{column_family, rule.column_qualifier(),
+    RestoreValue restore_value{*column_family, rule.column_qualifier(),
                                result.timestamp,
                                std::move(result.maybe_old_value.value())};
     undo.emplace(std::move(restore_value));
   } else {
     // We created a new cell -- we would need to delete it in any rollback
-    DeleteValue delete_value{column_family, rule.column_qualifier(),
+    DeleteValue delete_value{*column_family, rule.column_qualifier(),
                              result.timestamp};
     undo.emplace(std::move(delete_value));
   }
@@ -1754,7 +1690,7 @@ void ProcessReadModifyWriteResult(
 google::bigtable::v2::ReadModifyWriteRowResponse
 FamiliesToReadModifyWriteResponse(
     std::string const& row_key,
-    std::map<std::string, ColumnFamily> const& families) {
+    std::map<std::string, InMemoryColumnFamily> const& families) {
   google::bigtable::v2::ReadModifyWriteRowResponse resp;
   auto* row = resp.mutable_row();
   row->set_key(row_key);
@@ -1781,7 +1717,7 @@ FamiliesToReadModifyWriteResponse(
 }
 
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
-RowTransaction::ReadModifyWriteRow(
+InMemoryRowTransaction::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
   if (row_key_.empty()) {
     return InvalidArgumentError(
@@ -1792,7 +1728,7 @@ RowTransaction::ReadModifyWriteRow(
   // tmp_families is a small one row mini table used to accumulate
   // changed cells efficiently for later return in the row returned by
   // the RPC.
-  std::map<std::string, ColumnFamily> tmp_families;
+  std::map<std::string, InMemoryColumnFamily> tmp_families;
 
   for (auto const& rule : request.rules()) {
     auto maybe_column_family = table_->FindColumnFamily(rule);
@@ -1800,16 +1736,17 @@ RowTransaction::ReadModifyWriteRow(
       return maybe_column_family.status();
     }
 
-    auto& column_family = maybe_column_family->get();
+    auto column_family = std::static_pointer_cast<InMemoryColumnFamily>(
+        maybe_column_family.value());
     if (rule.has_append_value()) {
-      auto result = column_family.ReadModifyWrite(
+      auto result = column_family->ReadModifyWrite(
           row_key_, rule.column_qualifier(), rule.append_value());
 
       ProcessReadModifyWriteResult(column_family, row_key_, undo_, rule, result,
                                    tmp_families);
 
     } else if (rule.has_increment_amount()) {
-      auto maybe_result = column_family.ReadModifyWrite(
+      auto maybe_result = column_family->ReadModifyWrite(
           row_key_, rule.column_qualifier(), rule.increment_amount());
       if (!maybe_result) {
         return maybe_result.status();
@@ -1831,7 +1768,7 @@ RowTransaction::ReadModifyWriteRow(
   return FamiliesToReadModifyWriteResponse(row_key_, tmp_families);
 }
 
-void RowTransaction::Undo() {
+void InMemoryRowTransaction::Undo() {
   auto row_key = row_key_;
 
   while (!undo_.empty()) {
@@ -1854,7 +1791,7 @@ void RowTransaction::Undo() {
       continue;
     }
 
-    // If we get here, there is an type of undo log that has not been
+    // If we get here, there is a type of undo log that has not been
     // implemented!
     std::abort();
   }
