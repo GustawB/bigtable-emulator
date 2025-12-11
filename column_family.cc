@@ -340,6 +340,42 @@ PersistentColumnFamily::~PersistentColumnFamily() {
   }
 }
 
+absl::optional<std::string> PersistentColumnFamily::SetCell(
+    std::string const& row_key, std::string const& column_qualifier,
+    std::chrono::milliseconds timestamp, std::string const& value) {
+  return {};
+}
+
+StatusOr<absl::optional<std::string>> PersistentColumnFamily::UpdateCell(
+    std::string const& row_key, std::string const& column_qualifier,
+    std::chrono::milliseconds timestamp, std::string& value) {
+  return Status();
+}
+
+std::map<std::string, std::vector<Cell>> PersistentColumnFamily::DeleteRow(
+    std::string const& row_key) {
+  return {};
+}
+
+std::vector<Cell> PersistentColumnFamily::DeleteColumn(
+    std::string const& row_key, std::string const& column_qualifier,
+    ::google::bigtable::v2::TimestampRange const& time_range) {
+  return {};
+}
+
+std::vector<Cell> PersistentColumnFamily::DeleteColumn(
+    std::map<std::string, ColumnFamilyRow>::iterator row_it,
+    std::string const& column_qualifier,
+    ::google::bigtable::v2::TimestampRange const& time_range) {
+  return {};
+}
+
+absl::optional<Cell> PersistentColumnFamily::DeleteTimeStamp(
+    std::string const& row_key, std::string const& column_qualifier,
+    std::chrono::milliseconds timestamp) {
+  return {};
+}
+
 class FilteredColumnFamilyStream::FilterApply {
  public:
   explicit FilterApply(FilteredColumnFamilyStream& parent) : parent_(parent) {}
@@ -379,9 +415,9 @@ FilteredColumnFamilyStream::FilteredColumnFamilyStream(
       row_ranges_(std::move(row_set)),
       column_ranges_(StringRangeSet::All()),
       timestamp_ranges_(TimestampRangeSet::All()),
-      rows_(
-          StringRangeFilteredMapView<InMemoryColumnFamily>(column_family, *row_ranges_),
-          std::cref(row_regexes_)) {}
+      rows_(StringRangeFilteredMapView<InMemoryColumnFamily>(column_family,
+                                                             *row_ranges_),
+            std::cref(row_regexes_)) {}
 
 bool FilteredColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {

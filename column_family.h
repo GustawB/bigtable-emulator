@@ -17,24 +17,19 @@
 
 #include "google/cloud/internal/big_endian.h"
 #include "google/cloud/status_or.h"
-#include "absl/types/optional.h"
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
 #include "range_set.h"
 #include <google/bigtable/admin/v2/types.pb.h>
-#include <google/bigtable/v2/data.pb.h>
 #include <rocksdb/db.h>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
-
-#include "column_family.h"
 
 namespace google {
 namespace cloud {
@@ -249,13 +244,13 @@ class ColumnFamilyRow {
 class ColumnFamily {
  public:
   ColumnFamily() = default;
-    virtual ~ColumnFamily() = default;
+  virtual ~ColumnFamily() = default;
   // ConstructAggregateColumnFamily can be used to return an aggregate
   // ColumnFamily that can support AddToCell or MergeToCell and
   // similar aggregate complex types. To construct an ordinary
   // ColumnFamily, use the default constructor ColumnFamily().
-  static StatusOr<std::shared_ptr<ColumnFamily>> ConstructAggregateColumnFamily(
-      google::bigtable::admin::v2::Type value_type);
+  // static StatusOr<std::shared_ptr<ColumnFamily>> ConstructAggregateColumnFamily(
+  // google::bigtable::admin::v2::Type value_type);
 
   /**
    * Insert or update and existing cell at a given row, column and timestamp.
@@ -270,10 +265,9 @@ class ColumnFamily {
    *     the previous value of the timestamp.
    *
    */
-  virtual absl::optional<std::string> SetCell(std::string const& row_key,
-                                      std::string const& column_qualifier,
-                                      std::chrono::milliseconds timestamp,
-                                      std::string const& value) = 0;
+  virtual absl::optional<std::string> SetCell(
+      std::string const& row_key, std::string const& column_qualifier,
+      std::chrono::milliseconds timestamp, std::string const& value) = 0;
 
   /**
    * UpdateCell is like SetCell except that, when a cell exists with
@@ -335,16 +329,16 @@ class ColumnFamily {
    *     that timestamp in then given column in the given row,
    *     otherwise absl::nullopt.
    */
-  virtual absl::optional<Cell> DeleteTimeStamp(std::string const& row_key,
-                                       std::string const& column_qualifier,
-                                       std::chrono::milliseconds timestamp) = 0;
+  virtual absl::optional<Cell> DeleteTimeStamp(
+      std::string const& row_key, std::string const& column_qualifier,
+      std::chrono::milliseconds timestamp) = 0;
 
-    absl::optional<google::bigtable::admin::v2::Type> GetValueType() {
-        return value_type_;
-    };
+  absl::optional<google::bigtable::admin::v2::Type> GetValueType() {
+    return value_type_;
+  };
 
-protected:
-    absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
+ protected:
+  absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
 };
 
 class InMemoryColumnFamily : public ColumnFamily {
@@ -397,9 +391,9 @@ class InMemoryColumnFamily : public ColumnFamily {
       std::string const& column_qualifier,
       ::google::bigtable::v2::TimestampRange const& time_range) override;
 
-  absl::optional<Cell> DeleteTimeStamp(std::string const& row_key,
-                                       std::string const& column_qualifier,
-                                       std::chrono::milliseconds timestamp) override;
+  absl::optional<Cell> DeleteTimeStamp(
+      std::string const& row_key, std::string const& column_qualifier,
+      std::chrono::milliseconds timestamp) override;
 
   const_iterator begin() const { return rows_.begin(); }
   iterator begin() { return rows_.begin(); }
@@ -520,32 +514,32 @@ class PersistentColumnFamily : public ColumnFamily {
     value_type_ = std::move(other.value_type_);
   }
 
-    absl::optional<std::string> SetCell(std::string const& row_key,
+  absl::optional<std::string> SetCell(std::string const& row_key,
                                       std::string const& column_qualifier,
                                       std::chrono::milliseconds timestamp,
                                       std::string const& value) override;
 
-    StatusOr<absl::optional<std::string>> UpdateCell(
-        std::string const& row_key, std::string const& column_qualifier,
-        std::chrono::milliseconds timestamp, std::string& value) override;
+  StatusOr<absl::optional<std::string>> UpdateCell(
+      std::string const& row_key, std::string const& column_qualifier,
+      std::chrono::milliseconds timestamp, std::string& value) override;
 
-    std::map<std::string, std::vector<Cell>> DeleteRow(
-        std::string const& row_key) override;
+  std::map<std::string, std::vector<Cell>> DeleteRow(
+      std::string const& row_key) override;
 
-    std::vector<Cell> DeleteColumn(
-        std::string const& row_key, std::string const& column_qualifier,
-        ::google::bigtable::v2::TimestampRange const& time_range) override;
+  std::vector<Cell> DeleteColumn(
+      std::string const& row_key, std::string const& column_qualifier,
+      ::google::bigtable::v2::TimestampRange const& time_range) override;
 
-    std::vector<Cell> DeleteColumn(
-        std::map<std::string, ColumnFamilyRow>::iterator row_it,
-        std::string const& column_qualifier,
-        ::google::bigtable::v2::TimestampRange const& time_range) override;
+  std::vector<Cell> DeleteColumn(
+      std::map<std::string, ColumnFamilyRow>::iterator row_it,
+      std::string const& column_qualifier,
+      ::google::bigtable::v2::TimestampRange const& time_range) override;
 
-    absl::optional<Cell> DeleteTimeStamp(std::string const& row_key,
-                                         std::string const& column_qualifier,
-                                         std::chrono::milliseconds timestamp) override;
+  absl::optional<Cell> DeleteTimeStamp(
+      std::string const& row_key, std::string const& column_qualifier,
+      std::chrono::milliseconds timestamp) override;
 
-  ~PersistentColumnFamily();
+  ~PersistentColumnFamily() override;
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
   static StatusOr<std::shared_ptr<PersistentColumnFamily>>
