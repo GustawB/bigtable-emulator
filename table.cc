@@ -19,7 +19,6 @@
 #include "google/cloud/status_or.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
-#include "absl/types/optional.h"
 #include "absl/types/variant.h"
 #include "column_family.h"
 #include "filter.h"
@@ -28,7 +27,6 @@
 #include "range_set.h"
 #include "re2/re2.h"
 #include "row_streamer.h"
-#include "timestamp_comparator.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/admin/v2/types.pb.h>
@@ -38,10 +36,8 @@
 #include <grpcpp/support/sync_stream.h>
 #include <cassert>
 #include <chrono>
-#include <climits>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -587,7 +583,8 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
   }
 
   rocksdb::Options options;
-  rocksdb::DB* raw_db;
+  rocksdb::TransactionDBOptions txn_options;
+  rocksdb::TransactionDB* raw_db;
   /**
    * If there is no database present, it will be created.
    * Column families are being created manually later, so we don't want to
@@ -597,17 +594,15 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
    */
   options.create_if_missing = true;
   options.create_missing_column_families = false;
-  // TODO; will this be cleaned up later?
-  options.comparator = new TimestampComparator();
   rocksdb::Status status =
-      rocksdb::DB::Open(options, data_root + table_name, &raw_db);
+      rocksdb::TransactionDB::Open(options, txn_options, data_root + table_name, &raw_db);
   if (!status.ok()) {
     return InternalError(
         "failed to create new rocksdb instance; " +
             std::string(status.getState()),
         GCP_ERROR_INFO().WithMetadata("path", data_root + table_name));
   }
-  res->db_ = std::shared_ptr<rocksdb::DB>(raw_db);
+  res->db_ = std::shared_ptr<rocksdb::TransactionDB>(raw_db);
 
   for (auto const& cfd : schema.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
@@ -804,7 +799,7 @@ Status PersistentTable::DoMutations(
                                       absl::StrFormat("%zu", row_key.size())));
   }
 
-  PersistentRowTransaction row_transaction(this->get(), row_key);
+  PersistentRowTransaction row_transaction(this->get(), row_key, db_.get());
   for (auto const& mutation : mutations) {
     if (mutation.has_set_cell()) {
       auto const& set_cell = mutation.set_cell();
@@ -1159,7 +1154,7 @@ Status InMemoryTable::ReadRows(
 
 /**
  * At the end, it will be probably almost identical to ReadRows
- * from InMemoryTable, and so it should be refactore.
+ * from InMemoryTable, and so it should be refactored.
  * Right now though, there are still a few things to be taken care of
  * (locks, filters), so for now let it stay this way.
  */
@@ -1198,7 +1193,6 @@ Status PersistentTable::ReadRows(
         rows_count++;
         current_row_key = stream->row_key();
       }
-
       if (rows_count > request.rows_limit()) {
         break;
       }
@@ -1409,13 +1403,45 @@ Status PersistentRowTransaction::PerformAddToCell(
     ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
     std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
     std::string& value) {
-  rocksdb::Status merge_status = txn_.Merge(
-      std::static_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr(),
-      row_key_, TimestampToHexString(ts_ms.count()), value);
-  if (!merge_status.ok()) {
+  rocksdb::ColumnFamilyHandle* raw_cf = std::static_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr();
+
+  std::string partial_key = prepare_partial_key(add_to_cell.column_qualifier().raw_value());
+  rocksdb::Endpoint start(partial_key, true);
+  rocksdb::Endpoint end(partial_key, true);
+  rocksdb::Status status = txn_->GetRangeLock(raw_cf, start, end);
+  if (!status.ok()) {
     return InternalError(
-        "Failed to add to cell",
+        "Failed to add to cell: " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
+  }
+
+  rocksdb::Iterator* it = txn_->GetIterator(rocksdb::ReadOptions(), raw_cf);
+  it->Seek(partial_key);
+  std::string new_value = value;
+  if (it->Valid() && it->key().starts_with(partial_key)) {
+    auto maybe_result = cf->update_cell_(it->value().ToString(), std::move(value));
+    if (!maybe_result) {
+      return InternalError(
+          "Failed to add to cell: " + maybe_result.status().message(),
+          GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
+    }
+    new_value = maybe_result.value();
+  }
+
+  std::string new_key = prepare_key(add_to_cell.column_qualifier().raw_value(), ts_ms.count());
+  status = txn_->Put(raw_cf, new_key, std::move(new_value));
+  if (!status.ok()) {
+    return InternalError(
+        "Failed to add to cell: " + status.ToString(),
+        GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
+  }
+  if (it->Valid() && it->key().starts_with(partial_key)) {
+    status = txn_->Delete(raw_cf, it->key());
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to add to cell: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
+    }
   }
 
   return Status();
@@ -1426,6 +1452,15 @@ Status RowTransaction::MergeToCell(
   return UnimplementedError(
       "Unsupported mutation type.",
       GCP_ERROR_INFO().WithMetadata("mutation", merge_to_cell.DebugString()));
+}
+
+std::string RowTransaction::prepare_key(const std::string& column_qualifier, int64_t ts) const {
+  int64_t mirror = std::numeric_limits<int64_t>::max() - ts;
+  return row_key_ + ':' + column_qualifier + ':' + absl::StrFormat("%016x", mirror);
+}
+
+std::string RowTransaction::prepare_partial_key(const std::string& column_qualifier) const {
+  return row_key_ + ':' + column_qualifier;
 }
 // NOLINTEND(readability-convert-member-functions-to-static)
 
@@ -1584,9 +1619,9 @@ Status InMemoryRowTransaction::SetCell(
 
 Status PersistentRowTransaction::commit() {
   auto persistent_table = std::static_pointer_cast<PersistentTable>(table_);
-  rocksdb::Status status =
-      persistent_table->ToRawPtr()->Write(rocksdb::WriteOptions(), &txn_);
+  rocksdb::Status status = txn_->Commit();
   if (!status.ok()) {
+    txn_->Rollback();
     return InvalidArgumentError(
         "Failed to commit the transaction: " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("table",
@@ -1618,9 +1653,9 @@ Status PersistentRowTransaction::SetCell(
             << "; column: " << set_cell.column_qualifier()
             << "; value: " << set_cell.value() << std::endl;
 
-  rocksdb::Status status = txn_.Put(
-      column_family->ToRawPtr(), row_key_ + ':' + set_cell.column_qualifier(),
-      absl::StrFormat("%016x", timestamp.count()), set_cell.value());
+  std::string prepared_key = prepare_key(set_cell.column_qualifier(), timestamp.count());
+  rocksdb::Status status = txn_->Put(
+      column_family->ToRawPtr(), prepared_key, set_cell.value());
 
   if (!status.ok()) {
     return InternalError(

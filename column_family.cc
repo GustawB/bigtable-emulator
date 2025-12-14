@@ -17,18 +17,14 @@
 #include "google/cloud/internal/make_status.h"
 #include "google/cloud/status_or.h"
 #include "absl/strings/str_format.h"
-#include "absl/types/optional.h"
-#include "absl/types/variant.h"
+#include "absl/strings/str_split.h"
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
-#include "merge_operator.h"
-#include "timestamp_comparator.h"
 #include <google/bigtable/admin/v2/types.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <cassert>
 #include <chrono>
-#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -312,7 +308,6 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
                                std::string const& name) {
   PersistentColumnFamily pcf;
   pcf.db_ = std::move(db);
-  opts.comparator = new TimestampComparator();
 
   rocksdb::ColumnFamilyHandle* raw = nullptr;
   auto status = pcf.db_->CreateColumnFamily(opts, name, &raw);
@@ -502,10 +497,7 @@ FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db)
     : column_family_name_(column_family_name),
       handle_(std::move(handle)),
-      db_(std::move(db)),
-      curr_timestamp_string_(
-          TimestampToHexString(0)),  // See timestamp_comparator.h
-      curr_timestamp_(curr_timestamp_string_) {}
+      db_(std::move(db)) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
@@ -522,7 +514,7 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
   if (!cur_value_) {
     curr_value_string_ = it_->value().ToString();
-    int64_t milliseconds = std::stoll(it_->timestamp().ToString(), nullptr, 16);
+    int64_t milliseconds = GetTimestamp(it_->key().ToString());
     cur_value_ =
         CellView(curr_row_, column_family_name_, curr_col_,
                  std::chrono::milliseconds(milliseconds), curr_value_string_);
@@ -551,7 +543,7 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     initialized_ = true;
 
     rocksdb::ReadOptions opts;
-    opts.timestamp = &curr_timestamp_;
+    // TODO: handle timestamp limits
     it_ = std::unique_ptr<rocksdb::Iterator>(
         db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();
@@ -567,14 +559,20 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
 
 std::string FilteredPersistentColumnFamilyStream::GetRowName(
     std::string const& key) const {
-  auto pos = key.find(row_col_separator_);
-  return key.substr(0, pos);
+  std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
+  return split[0];
 }
 
 std::string FilteredPersistentColumnFamilyStream::GetColumnName(
     std::string const& key) const {
-  auto pos = key.find(row_col_separator_);
-  return key.substr(pos + 1, key.length());
+  std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
+  return split[1];
+}
+
+int64_t FilteredPersistentColumnFamilyStream::GetTimestamp(std::string const& key) const {
+  std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
+  int64_t ts_mirror = std::stoll(split[2], nullptr, 16);
+  return std::numeric_limits<int64_t>::max() - ts_mirror;
 }
 
 StatusOr<std::shared_ptr<ColumnFamily>>
@@ -618,17 +616,29 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type,
     std::shared_ptr<rocksdb::DB> db_, std::string const& name) {
   rocksdb::ColumnFamilyOptions opts;
+  auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
+  if (!maybe_cf) {
+    return InternalError(
+        "Failed to create aggregate persistent column family: " +
+            maybe_cf.status().message(),
+        GCP_ERROR_INFO().WithMetadata("supplied value type",
+                                      value_type.DebugString()));
+  }
+
+  auto cf = maybe_cf.value();
+  cf->value_type_ = std::move(value_type);
+
   if (value_type.has_aggregate_type()) {
     auto const& aggregate_type = value_type.aggregate_type();
     switch (aggregate_type.aggregator_case()) {
       case google::bigtable::admin::v2::Type::Aggregate::kSum:
-        opts.merge_operator = std::make_shared<SumUpdateCellBEInt64>();
+        cf->update_cell_ = cf->SumUpdateCellBEInt64;
         break;
       case google::bigtable::admin::v2::Type::Aggregate::kMin:
-        opts.merge_operator = std::make_shared<MinUpdateCellBEInt64>();
+        cf->update_cell_ = cf->MinUpdateCellBEInt64;
         break;
       case google::bigtable::admin::v2::Type::Aggregate::kMax:
-        opts.merge_operator = std::make_shared<MaxUpdateCellBEInt64>();
+        cf->update_cell_ = cf->MaxUpdateCellBEInt64;
         break;
       default:
         return InvalidArgumentError(
@@ -638,17 +648,6 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
                 absl::StrFormat("%d", aggregate_type.aggregator_case())));
     }
 
-    auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
-    if (!maybe_cf) {
-      return InternalError(
-          "Failed to create aggregate persistent column family: " +
-              maybe_cf.status().message(),
-          GCP_ERROR_INFO().WithMetadata("supplied value type",
-                                        value_type.DebugString()));
-    }
-
-    auto cf = maybe_cf.value();
-    cf->value_type_ = std::move(value_type);
     return cf;
   }
 
