@@ -20,14 +20,14 @@
 #include "column_family.h"
 #include "filter.h"
 #include "range_set.h"
+#include "rocksdb/utilities/transaction.h"
+#include "rocksdb/utilities/transaction_db.h"
 #include "row_streamer.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/v2/bigtable.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <google/protobuf/field_mask.pb.h>
-#include "rocksdb/utilities/transaction_db.h"
-#include "rocksdb/utilities/transaction.h"
 #include <chrono>
 #include <map>
 #include <memory>
@@ -189,8 +189,9 @@ class RowTransaction {
       std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
       std::string& value) = 0;
 
-    std::string prepare_key(const std::string& column_qualifier, int64_t ts) const;
-    std::string prepare_partial_key(const std::string& column_qualifier) const;
+  std::string prepare_key(std::string const& column_qualifier,
+                          int64_t ts) const;
+  std::string prepare_partial_key(std::string const& column_qualifier) const;
 
   std::shared_ptr<Table> table_;
   // row_key_ is initialized from the request proto, and therefore it
@@ -254,7 +255,8 @@ class PersistentRowTransaction : public RowTransaction {
                                     std::string const& row_key,
                                     rocksdb::TransactionDB* db)
       : RowTransaction(std::move(table), row_key) {
-      txn_ = std::unique_ptr<rocksdb::Transaction>(db->BeginTransaction(rocksdb::WriteOptions()));
+    txn_ = std::unique_ptr<rocksdb::Transaction>(
+        db->BeginTransaction(rocksdb::WriteOptions()));
   }
 
   Status commit() override;
@@ -412,9 +414,8 @@ class PersistentTable : public Table {
  protected:
   std::unique_ptr<RowTransaction> NewRowTransaction(
       std::shared_ptr<Table> table, std::string const& row_key) const override {
-
-    return std::make_unique<PersistentRowTransaction>(std::move(table),
-                                                      row_key, db_.get());
+    return std::make_unique<PersistentRowTransaction>(std::move(table), row_key,
+                                                      db_.get());
   }
 
  private:

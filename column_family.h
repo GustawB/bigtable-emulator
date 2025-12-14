@@ -249,8 +249,9 @@ class ColumnFamily {
   // ColumnFamily that can support AddToCell or MergeToCell and
   // similar aggregate complex types. To construct an ordinary
   // ColumnFamily, use the default constructor ColumnFamily().
-  // static StatusOr<std::shared_ptr<ColumnFamily>> ConstructAggregateColumnFamily(
-  // google::bigtable::admin::v2::Type value_type);
+  // static StatusOr<std::shared_ptr<ColumnFamily>>
+  // ConstructAggregateColumnFamily( google::bigtable::admin::v2::Type
+  // value_type);
 
   /**
    * Insert or update and existing cell at a given row, column and timestamp.
@@ -337,11 +338,11 @@ class ColumnFamily {
     return value_type_;
   };
 
-    std::function<StatusOr<std::string>(std::string const&, std::string&&)>
+  std::function<StatusOr<std::string>(std::string const&, std::string&&)>
       update_cell_ = DefaultUpdateCell;
 
  protected:
-    // Support for aggregate and other complex types.
+  // Support for aggregate and other complex types.
   absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
 
   static StatusOr<std::string> DefaultUpdateCell(
@@ -673,7 +674,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   void InitializeIfNeeded() const;
   std::string GetRowName(std::string const& key) const;
   std::string GetColumnName(std::string const& key) const;
-    int64_t GetTimestamp(std::string const& key) const;
+  int64_t GetTimestamp(std::string const& key) const;
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;

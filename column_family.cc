@@ -569,7 +569,8 @@ std::string FilteredPersistentColumnFamilyStream::GetColumnName(
   return split[1];
 }
 
-int64_t FilteredPersistentColumnFamilyStream::GetTimestamp(std::string const& key) const {
+int64_t FilteredPersistentColumnFamilyStream::GetTimestamp(
+    std::string const& key) const {
   std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
   int64_t ts_mirror = std::stoll(split[2], nullptr, 16);
   return std::numeric_limits<int64_t>::max() - ts_mirror;
@@ -626,7 +627,6 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
   }
 
   auto cf = maybe_cf.value();
-  cf->value_type_ = std::move(value_type);
 
   if (value_type.has_aggregate_type()) {
     auto const& aggregate_type = value_type.aggregate_type();
@@ -648,6 +648,7 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
                 absl::StrFormat("%d", aggregate_type.aggregator_case())));
     }
 
+    cf->value_type_ = std::move(value_type);
     return cf;
   }
 

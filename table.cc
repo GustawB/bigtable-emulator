@@ -255,8 +255,8 @@ Status InMemoryTable::Construct(google::bigtable::admin::v2::Table schema) {
     }
 
     if (opt_value_type.has_value()) {
-      auto cf =
-          InMemoryColumnFamily::ConstructAggregateColumnFamily(opt_value_type.value());
+      auto cf = InMemoryColumnFamily::ConstructAggregateColumnFamily(
+          opt_value_type.value());
       if (!cf) {
         return cf.status();
       }
@@ -547,8 +547,7 @@ StatusOr<CellStream> InMemoryTable::CreateCellStream(
     per_cf_streams.reserve(column_families_.size());
     for (auto const& column_family : column_families_) {
       per_cf_streams.emplace_back(std::make_unique<FilteredColumnFamilyStream>(
-          *std::static_pointer_cast<InMemoryColumnFamily>(
-              column_family.second),
+          *std::static_pointer_cast<InMemoryColumnFamily>(column_family.second),
           column_family.first, range_set));
     }
     return CellStream(
@@ -584,6 +583,7 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
 
   rocksdb::Options options;
   rocksdb::TransactionDBOptions txn_options;
+  txn_options.lock_mgr_handle.reset(rocksdb::NewRangeLockManager(nullptr));
   rocksdb::TransactionDB* raw_db;
   /**
    * If there is no database present, it will be created.
@@ -594,8 +594,8 @@ StatusOr<std::shared_ptr<Table>> PersistentTable::Create(
    */
   options.create_if_missing = true;
   options.create_missing_column_families = false;
-  rocksdb::Status status =
-      rocksdb::TransactionDB::Open(options, txn_options, data_root + table_name, &raw_db);
+  rocksdb::Status status = rocksdb::TransactionDB::Open(
+      options, txn_options, data_root + table_name, &raw_db);
   if (!status.ok()) {
     return InternalError(
         "failed to create new rocksdb instance; " +
@@ -1403,9 +1403,11 @@ Status PersistentRowTransaction::PerformAddToCell(
     ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
     std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
     std::string& value) {
-  rocksdb::ColumnFamilyHandle* raw_cf = std::static_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr();
+  rocksdb::ColumnFamilyHandle* raw_cf =
+      std::static_pointer_cast<PersistentColumnFamily>(cf)->ToRawPtr();
 
-  std::string partial_key = prepare_partial_key(add_to_cell.column_qualifier().raw_value());
+  std::string partial_key =
+      prepare_partial_key(add_to_cell.column_qualifier().raw_value());
   rocksdb::Endpoint start(partial_key, true);
   rocksdb::Endpoint end(partial_key, true);
   rocksdb::Status status = txn_->GetRangeLock(raw_cf, start, end);
@@ -1419,7 +1421,8 @@ Status PersistentRowTransaction::PerformAddToCell(
   it->Seek(partial_key);
   std::string new_value = value;
   if (it->Valid() && it->key().starts_with(partial_key)) {
-    auto maybe_result = cf->update_cell_(it->value().ToString(), std::move(value));
+    auto maybe_result =
+        cf->update_cell_(it->value().ToString(), std::move(value));
     if (!maybe_result) {
       return InternalError(
           "Failed to add to cell: " + maybe_result.status().message(),
@@ -1428,7 +1431,8 @@ Status PersistentRowTransaction::PerformAddToCell(
     new_value = maybe_result.value();
   }
 
-  std::string new_key = prepare_key(add_to_cell.column_qualifier().raw_value(), ts_ms.count());
+  std::string new_key =
+      prepare_key(add_to_cell.column_qualifier().raw_value(), ts_ms.count());
   status = txn_->Put(raw_cf, new_key, std::move(new_value));
   if (!status.ok()) {
     return InternalError(
@@ -1454,12 +1458,15 @@ Status RowTransaction::MergeToCell(
       GCP_ERROR_INFO().WithMetadata("mutation", merge_to_cell.DebugString()));
 }
 
-std::string RowTransaction::prepare_key(const std::string& column_qualifier, int64_t ts) const {
+std::string RowTransaction::prepare_key(std::string const& column_qualifier,
+                                        int64_t ts) const {
   int64_t mirror = std::numeric_limits<int64_t>::max() - ts;
-  return row_key_ + ':' + column_qualifier + ':' + absl::StrFormat("%016x", mirror);
+  return row_key_ + ':' + column_qualifier + ':' +
+         absl::StrFormat("%016x", mirror);
 }
 
-std::string RowTransaction::prepare_partial_key(const std::string& column_qualifier) const {
+std::string RowTransaction::prepare_partial_key(
+    std::string const& column_qualifier) const {
   return row_key_ + ':' + column_qualifier;
 }
 // NOLINTEND(readability-convert-member-functions-to-static)
@@ -1653,9 +1660,10 @@ Status PersistentRowTransaction::SetCell(
             << "; column: " << set_cell.column_qualifier()
             << "; value: " << set_cell.value() << std::endl;
 
-  std::string prepared_key = prepare_key(set_cell.column_qualifier(), timestamp.count());
-  rocksdb::Status status = txn_->Put(
-      column_family->ToRawPtr(), prepared_key, set_cell.value());
+  std::string prepared_key =
+      prepare_key(set_cell.column_qualifier(), timestamp.count());
+  rocksdb::Status status =
+      txn_->Put(column_family->ToRawPtr(), prepared_key, set_cell.value());
 
   if (!status.ok()) {
     return InternalError(
