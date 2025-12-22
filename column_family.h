@@ -249,8 +249,9 @@ class ColumnFamily {
   // ColumnFamily that can support AddToCell or MergeToCell and
   // similar aggregate complex types. To construct an ordinary
   // ColumnFamily, use the default constructor ColumnFamily().
-  // static StatusOr<std::shared_ptr<ColumnFamily>> ConstructAggregateColumnFamily(
-  // google::bigtable::admin::v2::Type value_type);
+  // static StatusOr<std::shared_ptr<ColumnFamily>>
+  // ConstructAggregateColumnFamily( google::bigtable::admin::v2::Type
+  // value_type);
 
   /**
    * Insert or update and existing cell at a given row, column and timestamp.
@@ -337,8 +338,75 @@ class ColumnFamily {
     return value_type_;
   };
 
+  std::function<StatusOr<std::string>(std::string const&, std::string&&)>
+      update_cell_ = DefaultUpdateCell;
+
  protected:
+  // Support for aggregate and other complex types.
   absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
+
+  static StatusOr<std::string> DefaultUpdateCell(
+      std::string const& /*existing_value*/, std::string&& new_value) {
+    return new_value;
+  };
+
+  static StatusOr<std::string> SumUpdateCellBEInt64(
+      std::string const& existing_value, std::string&& new_value) {
+    auto existing_value_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(existing_value);
+    if (!existing_value_int) {
+      return existing_value_int.status();
+    }
+
+    auto new_value_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(new_value);
+    if (!new_value_int) {
+      return new_value_int.status();
+    }
+
+    return google::cloud::internal::EncodeBigEndian(existing_value_int.value() +
+                                                    new_value_int.value());
+  };
+
+  static StatusOr<std::string> MaxUpdateCellBEInt64(
+      std::string const& existing_value, std::string&& new_value) {
+    auto existing_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(existing_value);
+    if (!existing_int) {
+      return existing_int.status();
+    }
+    auto new_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(new_value);
+    if (!new_int) {
+      return new_int.status();
+    }
+
+    if (existing_int.value() > new_int.value()) {
+      return existing_value;
+    }
+
+    return new_value;
+  };
+
+  static StatusOr<std::string> MinUpdateCellBEInt64(
+      std::string const& existing_value, std::string&& new_value) {
+    auto existing_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(existing_value);
+    if (!existing_int) {
+      return existing_int.status();
+    }
+    auto new_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(new_value);
+    if (!new_int) {
+      return new_int.status();
+    }
+
+    if (existing_int.value() < new_int.value()) {
+      return existing_value;
+    }
+
+    return new_value;
+  };
 };
 
 class InMemoryColumnFamily : public ColumnFamily {
@@ -427,75 +495,6 @@ class InMemoryColumnFamily : public ColumnFamily {
 
  private:
   std::map<std::string, ColumnFamilyRow> rows_;
-
-  // Support for aggregate and other complex types.
-  absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
-
-  static StatusOr<std::string> DefaultUpdateCell(
-      std::string const& /*existing_value*/, std::string&& new_value) {
-    return new_value;
-  };
-
-  static StatusOr<std::string> SumUpdateCellBEInt64(
-      std::string const& existing_value, std::string&& new_value) {
-    auto existing_value_int =
-        google::cloud::internal::DecodeBigEndian<std::int64_t>(existing_value);
-    if (!existing_value_int) {
-      return existing_value_int.status();
-    }
-
-    auto new_value_int =
-        google::cloud::internal::DecodeBigEndian<std::int64_t>(new_value);
-    if (!new_value_int) {
-      return new_value_int.status();
-    }
-
-    return google::cloud::internal::EncodeBigEndian(existing_value_int.value() +
-                                                    new_value_int.value());
-  };
-
-  static StatusOr<std::string> MaxUpdateCellBEInt64(
-      std::string const& existing_value, std::string&& new_value) {
-    auto existing_int =
-        google::cloud::internal::DecodeBigEndian<std::int64_t>(existing_value);
-    if (!existing_int) {
-      return existing_int.status();
-    }
-    auto new_int =
-        google::cloud::internal::DecodeBigEndian<std::int64_t>(new_value);
-    if (!new_int) {
-      return new_int.status();
-    }
-
-    if (existing_int.value() > new_int.value()) {
-      return existing_value;
-    }
-
-    return new_value;
-  };
-
-  static StatusOr<std::string> MinUpdateCellBEInt64(
-      std::string const& existing_value, std::string&& new_value) {
-    auto existing_int =
-        google::cloud::internal::DecodeBigEndian<std::int64_t>(existing_value);
-    if (!existing_int) {
-      return existing_int.status();
-    }
-    auto new_int =
-        google::cloud::internal::DecodeBigEndian<std::int64_t>(new_value);
-    if (!new_int) {
-      return new_int.status();
-    }
-
-    if (existing_int.value() < new_int.value()) {
-      return existing_value;
-    }
-
-    return new_value;
-  };
-
-  std::function<StatusOr<std::string>(std::string const&, std::string&&)>
-      update_cell_ = DefaultUpdateCell;
 };
 
 /**
@@ -675,6 +674,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   void InitializeIfNeeded() const;
   std::string GetRowName(std::string const& key) const;
   std::string GetColumnName(std::string const& key) const;
+  int64_t GetTimestamp(std::string const& key) const;
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
@@ -686,8 +686,6 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   mutable std::string curr_col_;
   mutable std::string curr_value_string_;
   mutable absl::optional<CellView> cur_value_;
-  mutable std::string curr_timestamp_string_;
-  mutable rocksdb::Slice curr_timestamp_;
 
   // TODO: Discuss if its okay, or should we e.g. forbid using ':' elsewhere
   char const row_col_separator_ = ':';

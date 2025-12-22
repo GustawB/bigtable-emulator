@@ -20,14 +20,14 @@
 #include "column_family.h"
 #include "filter.h"
 #include "range_set.h"
+#include "rocksdb/utilities/transaction.h"
+#include "rocksdb/utilities/transaction_db.h"
 #include "row_streamer.h"
-#include "table.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/v2/bigtable.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <google/protobuf/field_mask.pb.h>
-#include <rocksdb/db.h>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -189,8 +189,12 @@ class RowTransaction {
       std::shared_ptr<ColumnFamily> cf, std::chrono::milliseconds ts_ms,
       std::string& value) = 0;
 
+  std::string prepare_key(std::string const& column_qualifier,
+                          int64_t ts) const;
+  std::string prepare_partial_key(std::string const& column_qualifier) const;
+
   std::shared_ptr<Table> table_;
-  // row_key_ is initialized from the request proto and therefore it
+  // row_key_ is initialized from the request proto, and therefore it
   // is safe to access it while the mutation request is ongoing. We
   // store a reference to it to avoid copying a potentially very large
   // (up to 4KB) value.
@@ -248,8 +252,12 @@ class InMemoryRowTransaction : public RowTransaction {
 class PersistentRowTransaction : public RowTransaction {
  public:
   explicit PersistentRowTransaction(std::shared_ptr<Table> table,
-                                    std::string const& row_key)
-      : RowTransaction(std::move(table), row_key), txn_(0, 0, 0, 16){};
+                                    std::string const& row_key,
+                                    rocksdb::TransactionDB* db)
+      : RowTransaction(std::move(table), row_key) {
+    txn_ = std::unique_ptr<rocksdb::Transaction>(
+        db->BeginTransaction(rocksdb::WriteOptions()));
+  }
 
   Status commit() override;
   Status SetCell(
@@ -274,7 +282,7 @@ class PersistentRowTransaction : public RowTransaction {
       std::string& value) override;
 
  private:
-  rocksdb::WriteBatch txn_;
+  std::unique_ptr<rocksdb::Transaction> txn_;
 };
 
 class InMemoryTable : public Table {
@@ -406,8 +414,8 @@ class PersistentTable : public Table {
  protected:
   std::unique_ptr<RowTransaction> NewRowTransaction(
       std::shared_ptr<Table> table, std::string const& row_key) const override {
-    return std::make_unique<PersistentRowTransaction>(std::move(table),
-                                                      row_key);
+    return std::make_unique<PersistentRowTransaction>(std::move(table), row_key,
+                                                      db_.get());
   }
 
  private:
@@ -427,7 +435,7 @@ class PersistentTable : public Table {
    * We also don't need to care about locking here, as rocksdb has internal
    * synchronization.
    */
-  std::shared_ptr<rocksdb::DB> db_;
+  std::shared_ptr<rocksdb::TransactionDB> db_;
 };
 
 /**
