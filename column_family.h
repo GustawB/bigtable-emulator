@@ -562,6 +562,10 @@ class PersistentColumnFamily : public ColumnFamily {
 
   bool RowKeyExists(std::string const& row_key) override;
 
+  void ResetHandle(std::shared_ptr<rocksdb::ColumnFamilyHandle> h) {
+    handle_ = std::move(h);
+  }
+
   ~PersistentColumnFamily() override;
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
