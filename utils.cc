@@ -28,8 +28,8 @@ void ModifyCfRollback::Commit() {
 }
 
 ModifyCfRollback::CfHandlePtr ModifyCfRollback::AdoptHandle(
-    rocksdb::DB* db, rocksdb::ColumnFamilyHandle* raw) {
-  return CfHandlePtr(raw, [db](rocksdb::ColumnFamilyHandle* h) {
+    rocksdb::ColumnFamilyHandle* raw) {
+  return CfHandlePtr(raw, [db = db_](rocksdb::ColumnFamilyHandle* h) {
     if (h == nullptr) return;
     (void)db->DestroyColumnFamilyHandle(h);
   });
@@ -45,7 +45,6 @@ Status ModifyCfRollback::Rollback() {
           "Rollback: DropColumnFamily(created) failed: " + s.ToString(),
           GCP_ERROR_INFO().WithMetadata("cf", it->id));
     }
-
     it->handle.reset();
   }
 
@@ -59,7 +58,7 @@ Status ModifyCfRollback::Rollback() {
           GCP_ERROR_INFO().WithMetadata("cf", it->id));
     }
 
-    auto new_handle = AdoptHandle(db_, raw);
+    auto new_handle = AdoptHandle(raw);
 
     Status copy = CopyAllKeys(it->old_handle, new_handle);
     if (!copy.ok()) {
@@ -68,6 +67,7 @@ Status ModifyCfRollback::Rollback() {
     }
 
     it->cf_obj->ResetHandle(new_handle);
+    it->old_handle.reset();
   }
 
   return Status();

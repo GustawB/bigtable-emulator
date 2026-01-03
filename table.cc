@@ -659,7 +659,7 @@ PersistentTable::ModifyColumnFamilies(
   auto new_schema = schema_;
   auto new_handles = column_families_;
 
-  ModifyCfRollback rollback(db_.get());
+  ModifyCfRollback rollback(db_);
 
   auto rollback_and_return =
       [&](Status const& original) -> StatusOr<btadmin::Table> {
