@@ -15,7 +15,8 @@ class ColumnFamily;
 class PersistentColumnFamily;
 class ModifyCfRollback {
  public:
-  explicit ModifyCfRollback(rocksdb::DB* db) : db_(db) {}
+  explicit ModifyCfRollback(std::shared_ptr<rocksdb::DB> db)
+      : db_(std::move(db)) {}
 
   void RecordCreated(std::string id,
                      std::shared_ptr<rocksdb::ColumnFamilyHandle> handle);
@@ -31,12 +32,11 @@ class ModifyCfRollback {
  private:
   using CfHandlePtr = std::shared_ptr<rocksdb::ColumnFamilyHandle>;
 
-  static CfHandlePtr AdoptHandle(rocksdb::DB* db,
-                                 rocksdb::ColumnFamilyHandle* raw);
+  CfHandlePtr AdoptHandle(rocksdb::ColumnFamilyHandle* raw);
 
   Status CopyAllKeys(CfHandlePtr const& from, CfHandlePtr const& to);
 
-  rocksdb::DB* db_;
+  std::shared_ptr<rocksdb::DB> db_;
 
   struct DroppedCfBackup {
     std::string id;
