@@ -302,6 +302,10 @@ absl::optional<Cell> InMemoryColumnFamily::DeleteTimeStamp(
   return ret;
 }
 
+std::unique_ptr<AbstractCellStreamImpl> InMemoryColumnFamily::GetFilteredColumnFamilyStream(std::shared_ptr<StringRangeSet const> row_set, std::string column_family_name) {
+  return std::make_unique<FilteredInMemoryColumnFamilyStream>(*this, column_family_name, row_set);
+}
+
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
                                rocksdb::ColumnFamilyOptions opts,
@@ -371,9 +375,13 @@ absl::optional<Cell> PersistentColumnFamily::DeleteTimeStamp(
   return {};
 }
 
-class FilteredColumnFamilyStream::FilterApply {
+std::unique_ptr<AbstractCellStreamImpl> PersistentColumnFamily::GetFilteredColumnFamilyStream(std::shared_ptr<StringRangeSet const> row_set, std::string column_family_name) {
+  return std::make_unique<FilteredPersistentColumnFamilyStream>(handle_, column_family_name, db_, row_set);
+}
+
+class FilteredInMemoryColumnFamilyStream::FilterApply {
  public:
-  explicit FilterApply(FilteredColumnFamilyStream& parent) : parent_(parent) {}
+  explicit FilterApply(FilteredInMemoryColumnFamilyStream& parent) : parent_(parent) {}
 
   bool operator()(ColumnRange const& column_range) {
     if (column_range.column_family == parent_.column_family_name_) {
@@ -400,10 +408,10 @@ class FilteredColumnFamilyStream::FilterApply {
   }
 
  private:
-  FilteredColumnFamilyStream& parent_;
+  FilteredInMemoryColumnFamilyStream& parent_;
 };
 
-FilteredColumnFamilyStream::FilteredColumnFamilyStream(
+FilteredInMemoryColumnFamilyStream::FilteredInMemoryColumnFamilyStream(
     InMemoryColumnFamily const& column_family, std::string column_family_name,
     std::shared_ptr<StringRangeSet const> row_set)
     : column_family_name_(std::move(column_family_name)),
@@ -414,17 +422,17 @@ FilteredColumnFamilyStream::FilteredColumnFamilyStream(
                                                              *row_ranges_),
             std::cref(row_regexes_)) {}
 
-bool FilteredColumnFamilyStream::ApplyFilter(
+bool FilteredInMemoryColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
   assert(!initialized_);
   return absl::visit(FilterApply(*this), internal_filter);
 }
 
-bool FilteredColumnFamilyStream::HasValue() const {
+bool FilteredInMemoryColumnFamilyStream::HasValue() const {
   InitializeIfNeeded();
   return *row_it_ != rows_.end();
 }
-CellView const& FilteredColumnFamilyStream::Value() const {
+CellView const& FilteredInMemoryColumnFamilyStream::Value() const {
   InitializeIfNeeded();
   if (!cur_value_) {
     cur_value_ = CellView((*row_it_)->first, column_family_name_,
@@ -434,7 +442,7 @@ CellView const& FilteredColumnFamilyStream::Value() const {
   return cur_value_.value();
 }
 
-bool FilteredColumnFamilyStream::Next(NextMode mode) {
+bool FilteredInMemoryColumnFamilyStream::Next(NextMode mode) {
   InitializeIfNeeded();
   cur_value_.reset();
   assert(*row_it_ != rows_.end());
@@ -458,7 +466,7 @@ bool FilteredColumnFamilyStream::Next(NextMode mode) {
   return true;
 }
 
-void FilteredColumnFamilyStream::InitializeIfNeeded() const {
+void FilteredInMemoryColumnFamilyStream::InitializeIfNeeded() const {
   if (!initialized_) {
     row_it_ = rows_.begin();
     PointToFirstCellAfterRowChange();
@@ -466,7 +474,7 @@ void FilteredColumnFamilyStream::InitializeIfNeeded() const {
   }
 }
 
-bool FilteredColumnFamilyStream::PointToFirstCellAfterColumnChange() const {
+bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterColumnChange() const {
   for (; column_it_.value() != columns_.value().end(); ++(column_it_.value())) {
     cells_ = TimestampRangeFilteredMapView<ColumnRow>(
         column_it_.value()->second, timestamp_ranges_);
@@ -478,7 +486,7 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterColumnChange() const {
   return false;
 }
 
-bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
+bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterRowChange() const {
   for (; (*row_it_) != rows_.end(); ++(*row_it_)) {
     columns_ = RegexFiteredMapView<StringRangeFilteredMapView<ColumnFamilyRow>>(
         StringRangeFilteredMapView<ColumnFamilyRow>((*row_it_)->second,
@@ -494,10 +502,11 @@ bool FilteredColumnFamilyStream::PointToFirstCellAfterRowChange() const {
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db)
+    std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db, std::shared_ptr<StringRangeSet const> row_set)
     : column_family_name_(column_family_name),
       handle_(std::move(handle)),
-      db_(std::move(db)) {}
+      db_(std::move(db)),
+      row_set_(std::move(row_set)) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
