@@ -53,7 +53,7 @@ StatusOr<std::shared_ptr<Table>> CreateTable(
         ::google::bigtable::admin::v2::ColumnFamily();
   }
 
-  return Table::Create(schema);
+  return Table::Create(schema, false);
 }
 
 Status SetCells(
@@ -94,14 +94,16 @@ Status HasCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
                std::string const& column_family, std::string const& row_key,
                std::string const& column_qualifier, int64_t timestamp_micros,
                std::string const& value) {
-  auto column_family_it = table->find(column_family);
-  if (column_family_it == table->end()) {
+  auto utilities = table->GetUtilities();
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
     return NotFoundError(
         "column family not found in table",
         GCP_ERROR_INFO().WithMetadata("column family", column_family));
   }
 
-  auto const& cf = column_family_it->second;
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   auto column_family_row_it = cf->find(row_key);
   if (column_family_row_it == cf->end()) {
     return NotFoundError("no row key found in column family",
@@ -142,14 +144,16 @@ Status HasCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
 StatusOr<bool> HasRow(
     std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
     std::string const& column_family, std::string const& row_key) {
-  auto column_family_it = table->find(column_family);
-  if (column_family_it == table->end()) {
+  auto utilities = table->GetUtilities();
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
     return NotFoundError(
         "column family not found in table",
         GCP_ERROR_INFO().WithMetadata("column family", column_family));
   }
 
-  auto const& cf = column_family_it->second;
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   auto column_family_row_it = cf->find(row_key);
   if (column_family_row_it == cf->end()) {
     return false;

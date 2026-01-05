@@ -59,15 +59,13 @@ namespace emulator {
 namespace btadmin = ::google::bigtable::admin::v2;
 
 StatusOr<std::shared_ptr<TableUtilities>> TableUtilities::Create(
-    std::string const& table_name,
     google::bigtable::admin::v2::Table const& schema, bool should_persist,
     std::string const& data_root) {
   StatusOr<std::shared_ptr<TableUtilities>> maybe_utilities;
   if (!should_persist) {
-    maybe_utilities = InMemoryTableUtilities::Create();
+    maybe_utilities = InMemoryTableUtilities::Create(schema);
   } else {
-    maybe_utilities =
-        PersistentTableUtilities::Create(data_root, table_name, schema);
+    maybe_utilities = PersistentTableUtilities::Create(data_root, schema);
   }
   return maybe_utilities;
 }
@@ -83,8 +81,31 @@ StatusOr<std::shared_ptr<ColumnFamily>> TableUtilities::FindColumnFamily(
   }
   return column_family_it->second;
 }
-StatusOr<std::shared_ptr<TableUtilities>> InMemoryTableUtilities::Create() {
-  return std::shared_ptr<TableUtilities>(new InMemoryTableUtilities);
+StatusOr<std::shared_ptr<TableUtilities>> InMemoryTableUtilities::Create(
+    google::bigtable::admin::v2::Table const& schema) {
+  auto res = std::make_shared<InMemoryTableUtilities>();
+  for (auto const& column_family_def : schema.column_families()) {
+    absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
+        absl::nullopt;
+
+    // Support for complex types (AddToCell aggregations, e.t.c.).
+    if (column_family_def.second.has_value_type()) {
+      opt_value_type = column_family_def.second.value_type();
+    }
+
+    if (opt_value_type.has_value()) {
+      auto cf = InMemoryColumnFamily::ConstructAggregateColumnFamily(
+          opt_value_type.value());
+      if (!cf) {
+        return cf.status();
+      }
+      res->column_families_.emplace(column_family_def.first, cf.value());
+    } else {
+      res->column_families_.emplace(column_family_def.first,
+                                    std::make_shared<InMemoryColumnFamily>());
+    }
+  }
+  return std::shared_ptr<TableUtilities>(res);
 }
 
 std::unique_ptr<RowTransaction> InMemoryTableUtilities::NewRowTransaction(
@@ -251,9 +272,10 @@ InMemoryTableUtilities::ModifyColumnFamilies(
 }
 
 StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
-    std::string const& data_root, std::string const& table_name,
+    std::string const& data_root,
     google::bigtable::admin::v2::Table const& schema) {
-  std::filesystem::path db_path = std::filesystem::path(data_root) / table_name;
+  std::filesystem::path db_path =
+      std::filesystem::path(data_root) / schema.name();
   std::filesystem::path parent_path = db_path.parent_path();
 
   std::error_code ec;
@@ -285,7 +307,7 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
 
   std::shared_ptr<PersistentTableUtilities> res(new PersistentTableUtilities);
   res->db_.reset(raw_db);  // Assuming db_ is a smart pointer.
-  res->table_name_ = table_name;
+  res->table_name_ = schema.name();
 
   return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));
 }
@@ -546,18 +568,10 @@ PersistentTableUtilities::ModifyColumnFamilies(
 }
 
 StatusOr<std::shared_ptr<Table>> Table::Create(
-    std::string const& table_name, google::bigtable::admin::v2::Table schema,
-    bool should_persist, std::string const& data_root) {
+    google::bigtable::admin::v2::Table schema, bool should_persist,
+    std::string const& data_root) {
   std::shared_ptr<Table> res(new Table);
-
-  auto maybe_utilities = TableUtilities::Create(std::move(table_name), schema,
-                                                should_persist, data_root);
-  if (!maybe_utilities.ok()) {
-    return maybe_utilities.status();
-  }
-  res->utilities_ = maybe_utilities.value();
-
-  auto status = res->Construct(std::move(schema));
+  auto status = res->Construct(std::move(schema), should_persist, data_root);
   if (!status.ok()) {
     return status;
   }
@@ -722,7 +736,8 @@ Status Table::SampleRowKeys(
   return Status();
 }
 
-Status Table::Construct(google::bigtable::admin::v2::Table schema) {
+Status Table::Construct(google::bigtable::admin::v2::Table schema,
+                        bool should_persist, std::string const& data_root) {
   // Normally the constructor acts as a synchronization point. We don't have
   // that luxury here, so we need to make sure that the changes performed in
   // this member function are reflected in other threads. The simplest way to do
@@ -731,6 +746,12 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema) {
   schema_ = std::move(schema);
   Status parse_result = PrepareSchema();
   if (!parse_result.ok()) return parse_result;
+  auto maybe_utilities =
+      TableUtilities::Create(schema_, should_persist, data_root);
+  if (!maybe_utilities.ok()) {
+    return maybe_utilities.status();
+  }
+  utilities_ = maybe_utilities.value();
   utilities_->Construct(schema);
   return Status();
 }

@@ -72,7 +72,6 @@ class TableUtilities {
   virtual ~TableUtilities() = default;
 
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
-      std::string const& table_name,
       google::bigtable::admin::v2::Table const& schema, bool should_persist,
       std::string const& data_root);
 
@@ -119,7 +118,8 @@ class InMemoryTableUtilities
     : public TableUtilities,
       public std::enable_shared_from_this<InMemoryTableUtilities> {
  public:
-  static StatusOr<std::shared_ptr<TableUtilities>> Create();
+  static StatusOr<std::shared_ptr<TableUtilities>> Create(
+      google::bigtable::admin::v2::Table const& schema);
 
   std::unique_ptr<RowTransaction> NewRowTransaction(
       std::shared_ptr<Table> table, std::string const& row_key) override;
@@ -172,7 +172,7 @@ class PersistentTableUtilities
       public std::enable_shared_from_this<PersistentTableUtilities> {
  public:
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
-      std::string const& data_root, std::string const& table_name,
+      std::string const& data_root,
       google::bigtable::admin::v2::Table const& schema);
 
   std::unique_ptr<RowTransaction> NewRowTransaction(
@@ -213,8 +213,8 @@ class PersistentTableUtilities
 class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
-      std::string const& table_name, google::bigtable::admin::v2::Table schema,
-      bool should_persist, std::string const& data_root = "/root/");
+      google::bigtable::admin::v2::Table schema, bool should_persist,
+      std::string const& data_root = "/root/");
 
   std::shared_ptr<Table> get() { return shared_from_this(); }
 
@@ -256,9 +256,12 @@ class Table : public std::enable_shared_from_this<Table> {
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request);
 
+  // For testing only
+  std::shared_ptr<TableUtilities> GetUtilities() { return utilities_; }
+
   ~Table() = default;
 
- protected:
+ private:
   friend class RowTransaction;
   friend class InMemoryRowTransaction;
   friend class PersistentRowTransaction;
@@ -272,8 +275,8 @@ class Table : public std::enable_shared_from_this<Table> {
   mutable std::mutex mu_;
   google::bigtable::admin::v2::Table schema_;
 
- private:
-  Status Construct(google::bigtable::admin::v2::Table schema);
+  Status Construct(google::bigtable::admin::v2::Table schema,
+                   bool should_persist, std::string const& data_root);
 
   bool IsDeleteProtectedNoLock() const;
 

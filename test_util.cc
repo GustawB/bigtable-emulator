@@ -22,7 +22,7 @@ StatusOr<std::shared_ptr<Table>> CreateTable(
         ::google::bigtable::admin::v2::ColumnFamily();
   }
 
-  return Table::Create(table_name, schema, false);
+  return Table::Create(schema, false);
 }
 
 Status SetCells(

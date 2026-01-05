@@ -566,7 +566,9 @@ class PersistentColumnFamily : public ColumnFamily {
       std::shared_ptr<StringRangeSet const> row_set,
       std::string column_family_name) override;
 
-  bool RowKeyExists(std::string const& row_key) override { throw "UNIMPLEMENTED"; };
+  bool RowKeyExists(std::string const& row_key) override {
+    throw "UNIMPLEMENTED";
+  };
 
   void ResetHandle(std::shared_ptr<rocksdb::ColumnFamilyHandle> h) {
     handle_ = std::move(h);
