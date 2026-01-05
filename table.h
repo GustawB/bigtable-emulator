@@ -282,7 +282,7 @@ class Table : public std::enable_shared_from_this<Table> {
       google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
           mutations);
 
-  std::unique_ptr<TableUtilities> utilities_;
+  std::shared_ptr<TableUtilities> utilities_;
 };
 
 class RowTransaction {

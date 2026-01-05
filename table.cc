@@ -549,15 +549,17 @@ StatusOr<std::shared_ptr<Table>> Table::Create(
     std::string const& table_name, google::bigtable::admin::v2::Table schema,
     bool should_persist, std::string const& data_root) {
   std::shared_ptr<Table> res(new Table);
-  auto status = res->Construct(std::move(schema));
-  if (!status.ok()) {
-    return status;
-  }
 
   auto maybe_utilities = TableUtilities::Create(std::move(table_name), schema,
                                                 should_persist, data_root);
   if (!maybe_utilities.ok()) {
     return maybe_utilities.status();
+  }
+  res->utilities_ = maybe_utilities.value();
+
+  auto status = res->Construct(std::move(schema));
+  if (!status.ok()) {
+    return status;
   }
 
   return res;
@@ -729,9 +731,7 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema) {
   schema_ = std::move(schema);
   Status parse_result = PrepareSchema();
   if (!parse_result.ok()) return parse_result;
-
   utilities_->Construct(schema);
-
   return Status();
 }
 
