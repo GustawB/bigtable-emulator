@@ -58,13 +58,16 @@ namespace emulator {
 
 namespace btadmin = ::google::bigtable::admin::v2;
 
-StatusOr<std::shared_ptr<TableUtilities>> TableUtilities::Create(std::string const& table_name, const google::bigtable::admin::v2::Table& schema,
-      bool should_persist, std::string const& data_root) {
+StatusOr<std::shared_ptr<TableUtilities>> TableUtilities::Create(
+    std::string const& table_name,
+    google::bigtable::admin::v2::Table const& schema, bool should_persist,
+    std::string const& data_root) {
   StatusOr<std::shared_ptr<TableUtilities>> maybe_utilities;
   if (!should_persist) {
     maybe_utilities = InMemoryTableUtilities::Create();
   } else {
-    maybe_utilities  = PersistentTableUtilities::Create(data_root, table_name, schema);
+    maybe_utilities =
+        PersistentTableUtilities::Create(data_root, table_name, schema);
   }
   return maybe_utilities;
 }
@@ -96,11 +99,12 @@ StatusOr<CellStream> InMemoryTableUtilities::CreateCellStream(
     std::vector<std::unique_ptr<AbstractCellStreamImpl>> per_cf_streams;
     per_cf_streams.reserve(column_families_.size());
     for (auto const& column_family : column_families_) {
-      auto stream = column_family.second->GetFilteredColumnFamilyStream(range_set, column_family.first);
+      auto stream = column_family.second->GetFilteredColumnFamilyStream(
+          range_set, column_family.first);
       per_cf_streams.emplace_back(std::move(stream));
     }
-    return CellStream(
-        std::make_unique<FilteredInMemoryTableStream>(std::move(per_cf_streams)));
+    return CellStream(std::make_unique<FilteredInMemoryTableStream>(
+        std::move(per_cf_streams)));
   };
 
   if (maybe_row_filter.has_value()) {
@@ -110,7 +114,8 @@ StatusOr<CellStream> InMemoryTableUtilities::CreateCellStream(
   return table_stream_ctor();
 }
 
-Status InMemoryTableUtilities::Construct(google::bigtable::admin::v2::Table const& schema) {
+Status InMemoryTableUtilities::Construct(
+    google::bigtable::admin::v2::Table const& schema) {
   for (auto const& column_family_def : schema.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
         absl::nullopt;
@@ -135,6 +140,114 @@ Status InMemoryTableUtilities::Construct(google::bigtable::admin::v2::Table cons
   }
 
   return Status();
+}
+
+StatusOr<google::bigtable::admin::v2::Table>
+InMemoryTableUtilities::ModifyColumnFamilies(
+    google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
+    google::bigtable::admin::v2::Table schema) {
+  auto new_column_families = column_families_;
+  for (auto const& modification : request.modifications()) {
+    if (modification.drop()) {
+      if (schema.deletion_protection()) {
+        return FailedPreconditionError(
+            "The table has deletion protection.",
+            GCP_ERROR_INFO().WithMetadata("modification",
+                                          modification.DebugString()));
+      }
+      if (new_column_families.erase(modification.id()) == 0) {
+        return NotFoundError("No such column family.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+      if (schema.mutable_column_families()->erase(modification.id()) == 0) {
+        return InternalError("Column family with no schema.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+    } else if (modification.has_update()) {
+      auto& cfs = *schema.mutable_column_families();
+      auto cf_it = cfs.find(modification.id());
+      if (cf_it == cfs.end()) {
+        return NotFoundError("No such column family.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+
+      using google::protobuf::util::FieldMaskUtil;
+
+      using google::protobuf::util::FieldMaskUtil;
+      google::protobuf::FieldMask effective_mask;
+      if (modification.has_update_mask()) {
+        effective_mask = modification.update_mask();
+        if (!FieldMaskUtil::IsValidFieldMask<
+                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
+          return InvalidArgumentError(
+              "Update mask is invalid.",
+              GCP_ERROR_INFO().WithMetadata("modification",
+                                            modification.DebugString()));
+        }
+      } else {
+        FieldMaskUtil::FromString("gc_rule", &effective_mask);
+        if (!FieldMaskUtil::IsValidFieldMask<
+                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
+          return InternalError("Default update mask is invalid.",
+                               GCP_ERROR_INFO().WithMetadata(
+                                   "mask", effective_mask.DebugString()));
+        }
+      }
+
+      // Disallow the modification of the type of data stored in the
+      // column family (the aggregate type -- which is currently the
+      // only supported type -- can always be set during column family
+      // creation).
+      if (FieldMaskUtil::IsPathInFieldMask("value_type", effective_mask)) {
+        return InvalidArgumentError(
+            "The value_type cannot be changed after column family creation",
+            GCP_ERROR_INFO().WithMetadata("mask",
+                                          effective_mask.DebugString()));
+      }
+
+      FieldMaskUtil::MergeMessageTo(modification.update(), effective_mask,
+                                    FieldMaskUtil::MergeOptions(),
+                                    &(cf_it->second));
+    } else if (modification.has_create()) {
+      std::shared_ptr<ColumnFamily> cf;
+      // Have we been asked to create an aggregate column family?
+      if (modification.create().has_value_type()) {
+        auto value_type = modification.create().value_type();
+        auto maybe_cf =
+            InMemoryColumnFamily::ConstructAggregateColumnFamily(value_type);
+        if (!maybe_cf) {
+          return maybe_cf.status();
+        }
+        cf = std::move(maybe_cf.value());
+      } else {
+        cf = std::make_shared<InMemoryColumnFamily>();
+      }
+      if (!new_column_families.emplace(modification.id(), cf).second) {
+        return AlreadyExistsError(
+            "Column family already exists.",
+            GCP_ERROR_INFO().WithMetadata("modification",
+                                          modification.DebugString()));
+      }
+      if (!schema.mutable_column_families()
+               ->emplace(modification.id(), modification.create())
+               .second) {
+        return InternalError("Column family with schema but no data.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString()));
+      }
+    } else {
+      return UnimplementedError(
+          "Unsupported modification.",
+          GCP_ERROR_INFO().WithMetadata("modification",
+                                        modification.DebugString()));
+    }
+  }
+  // Defer destroying potentially large objects to after releasing the lock.
+  column_families_.swap(new_column_families);
+  return schema;
 }
 
 StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
@@ -171,7 +284,7 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
   }
 
   std::shared_ptr<PersistentTableUtilities> res(new PersistentTableUtilities);
-  res->db_.reset(raw_db); // Assuming db_ is a smart pointer.
+  res->db_.reset(raw_db);  // Assuming db_ is a smart pointer.
   res->table_name_ = table_name;
 
   return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));
@@ -179,18 +292,19 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
 
 std::unique_ptr<RowTransaction> PersistentTableUtilities::NewRowTransaction(
     std::shared_ptr<Table> table, std::string const& row_key) {
-  return std::make_unique<PersistentRowTransaction>(this->get(), row_key, db_.get());
+  return std::make_unique<PersistentRowTransaction>(this->get(), row_key,
+                                                    db_.get());
 }
 
 StatusOr<CellStream> PersistentTableUtilities::CreateCellStream(
     std::shared_ptr<StringRangeSet> range_set,
     absl::optional<google::bigtable::v2::RowFilter>) const {
   auto table_stream_ctor = [range_set = std::move(range_set), this] {
-    std::vector<std::unique_ptr<AbstractCellStreamImpl>>
-        per_cf_streams;
+    std::vector<std::unique_ptr<AbstractCellStreamImpl>> per_cf_streams;
     per_cf_streams.reserve(column_families_.size());
     for (auto const& handle : column_families_) {
-      auto stream = handle.second->GetFilteredColumnFamilyStream(range_set, handle.first);
+      auto stream =
+          handle.second->GetFilteredColumnFamilyStream(range_set, handle.first);
       per_cf_streams.emplace_back(std::move(stream));
     }
     return CellStream(std::make_unique<FilteredPersistentTableStream>(
@@ -200,7 +314,20 @@ StatusOr<CellStream> PersistentTableUtilities::CreateCellStream(
   return table_stream_ctor();
 }
 
-Status PersistentTableUtilities::Construct(google::bigtable::admin::v2::Table const& schema) {
+std::size_t PersistentTableUtilities::GetRowCountEstimate() {
+  throw "UNIMPLEMENTED";
+}
+
+void PersistentTableUtilities::RemoveAllDataFromColumnFamilies() {
+  throw "UNIMPLEMENTED";
+}
+
+void PersistentTableUtilities::DropRowRange(std::string const& row_key_prefix) {
+  throw "UNIMPLEMENTED";
+}
+
+Status PersistentTableUtilities::Construct(
+    google::bigtable::admin::v2::Table const& schema) {
   for (auto const& cfd : schema.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
         absl::nullopt;
@@ -219,8 +346,7 @@ Status PersistentTableUtilities::Construct(google::bigtable::admin::v2::Table co
     } else {
       // TODO: handle opts
       rocksdb::ColumnFamilyOptions opts;
-      auto maybe_new_cf =
-          PersistentColumnFamily::Create(db_, opts, cfd.first);
+      auto maybe_new_cf = PersistentColumnFamily::Create(db_, opts, cfd.first);
       if (!maybe_new_cf.ok()) {
         return InternalError(
             "failed to create column family " + cfd.first +
@@ -234,6 +360,191 @@ Status PersistentTableUtilities::Construct(google::bigtable::admin::v2::Table co
   return Status();
 }
 
+StatusOr<google::bigtable::admin::v2::Table>
+PersistentTableUtilities::ModifyColumnFamilies(
+    google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
+    google::bigtable::admin::v2::Table schema) {
+  auto new_handles = column_families_;
+
+  ModifyCfRollback rollback(db_);
+
+  auto rollback_and_return =
+      [&](Status const& original) -> StatusOr<btadmin::Table> {
+    Status rb = rollback.Rollback();
+    if (!rb.ok()) {
+      return InternalError(
+          "ModifyColumnFamilies failed and rollback failed: " + rb.message(),
+          GCP_ERROR_INFO()
+              .WithMetadata("original_error", original.message())
+              .WithMetadata("request", request.DebugString()));
+    }
+    return original;
+  };
+
+  for (auto const& modification : request.modifications()) {
+    if (modification.drop()) {
+      if (schema.deletion_protection()) {
+        return rollback_and_return(FailedPreconditionError(
+            "The table has deletion protection.",
+            GCP_ERROR_INFO().WithMetadata("modification",
+                                          modification.DebugString())));
+      }
+
+      auto it = new_handles.find(modification.id());
+      if (it == new_handles.end()) {
+        return rollback_and_return(
+            NotFoundError("No such column family.",
+                          GCP_ERROR_INFO().WithMetadata(
+                              "modification", modification.DebugString())));
+      }
+
+      auto cf_obj = it->second;
+
+      auto persistent_cf =
+          std::static_pointer_cast<PersistentColumnFamily>(cf_obj);
+
+      std::shared_ptr<rocksdb::ColumnFamilyHandle> old_handle =
+          persistent_cf->GetHandle();
+
+      rocksdb::ColumnFamilyDescriptor desc;
+      {
+        rocksdb::Status s = old_handle->GetDescriptor(&desc);
+        if (!s.ok()) {
+          return rollback_and_return(InternalError(
+              "Failed to get CF descriptor before drop: " + s.ToString(),
+              GCP_ERROR_INFO().WithMetadata("modification",
+                                            modification.DebugString())));
+        }
+      }
+
+      rollback.RecordDropped(modification.id(), persistent_cf, old_handle,
+                             desc);
+
+      {
+        rocksdb::Status s = db_->DropColumnFamily(old_handle.get());
+        if (!s.ok()) {
+          return rollback_and_return(InternalError(
+              "Failed to drop column family in RocksDB: " + s.ToString(),
+              GCP_ERROR_INFO().WithMetadata("modification",
+                                            modification.DebugString())));
+        }
+      }
+
+      new_handles.erase(modification.id());
+      if (schema.mutable_column_families()->erase(modification.id()) == 0) {
+        return rollback_and_return(
+            InternalError("Column family with no schema.",
+                          GCP_ERROR_INFO().WithMetadata(
+                              "modification", modification.DebugString())));
+      }
+
+    } else if (modification.has_update()) {
+      auto& cfs = *schema.mutable_column_families();
+      auto cf_it = cfs.find(modification.id());
+      if (cf_it == cfs.end()) {
+        return rollback_and_return(
+            NotFoundError("No such column family.",
+                          GCP_ERROR_INFO().WithMetadata(
+                              "modification", modification.DebugString())));
+      }
+
+      using google::protobuf::util::FieldMaskUtil;
+
+      google::protobuf::FieldMask effective_mask;
+      if (modification.has_update_mask()) {
+        effective_mask = modification.update_mask();
+        if (!FieldMaskUtil::IsValidFieldMask<
+                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
+          return rollback_and_return(InvalidArgumentError(
+              "Update mask is invalid.",
+              GCP_ERROR_INFO().WithMetadata("modification",
+                                            modification.DebugString())));
+        }
+      } else {
+        FieldMaskUtil::FromString("gc_rule", &effective_mask);
+        if (!FieldMaskUtil::IsValidFieldMask<
+                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
+          return rollback_and_return(
+              InternalError("Default update mask is invalid.",
+                            GCP_ERROR_INFO().WithMetadata(
+                                "mask", effective_mask.DebugString())));
+        }
+      }
+
+      // Disallow the modification of the type of data stored in the
+      // column family (the aggregate type -- which is currently the
+      // only supported type -- can always be set during column family
+      // creation).
+      if (FieldMaskUtil::IsPathInFieldMask("value_type", effective_mask)) {
+        return rollback_and_return(InvalidArgumentError(
+            "The value_type cannot be changed after column family creation",
+            GCP_ERROR_INFO().WithMetadata("mask",
+                                          effective_mask.DebugString())));
+      }
+
+      FieldMaskUtil::MergeMessageTo(modification.update(), effective_mask,
+                                    FieldMaskUtil::MergeOptions(),
+                                    &(cf_it->second));
+
+    } else if (modification.has_create()) {
+      if (new_handles.find(modification.id()) != new_handles.end()) {
+        return rollback_and_return(AlreadyExistsError(
+            "Column family already exists.",
+            GCP_ERROR_INFO().WithMetadata("modification",
+                                          modification.DebugString())));
+      }
+
+      std::shared_ptr<PersistentColumnFamily> cf;
+      // Have we been asked to create an aggregate column family?
+
+      if (modification.create().has_value_type()) {
+        auto value_type = modification.create().value_type();
+        auto maybe_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
+            value_type, db_, modification.id());
+        if (!maybe_cf) {
+          return rollback_and_return(maybe_cf.status());
+        }
+        cf = std::move(maybe_cf.value());
+      } else {
+        auto maybe_cf = PersistentColumnFamily::Create(
+            db_, rocksdb::ColumnFamilyOptions(), modification.id());
+        if (!maybe_cf.ok()) {
+          return rollback_and_return(
+              InternalError("Failed to create new column family; " +
+                                maybe_cf.status().message(),
+                            GCP_ERROR_INFO().WithMetadata(
+                                "modification", modification.DebugString())));
+        }
+        cf = maybe_cf.value();
+      }
+
+      rollback.RecordCreated(modification.id(), cf->GetHandle());
+
+      new_handles.emplace(modification.id(), cf);
+      if (!schema.mutable_column_families()
+               ->emplace(modification.id(), modification.create())
+               .second) {
+        return rollback_and_return(
+            InternalError("Column family with schema but no data.",
+                          GCP_ERROR_INFO().WithMetadata(
+                              "modification", modification.DebugString())));
+      }
+
+    } else {
+      return rollback_and_return(
+          UnimplementedError("Unsupported modification.",
+                             GCP_ERROR_INFO().WithMetadata(
+                                 "modification", modification.DebugString())));
+    }
+  }
+
+  rollback.Commit();
+
+  // Defer destroying potentially large objects to after releasing the lock.
+  column_families_.swap(new_handles);
+  return schema;
+}
+
 StatusOr<std::shared_ptr<Table>> Table::Create(
     std::string const& table_name, google::bigtable::admin::v2::Table schema,
     bool should_persist, std::string const& data_root) {
@@ -243,7 +554,8 @@ StatusOr<std::shared_ptr<Table>> Table::Create(
     return status;
   }
 
-  auto maybe_utilities = TableUtilities::Create(std::move(table_name), schema, should_persist, data_root);
+  auto maybe_utilities = TableUtilities::Create(std::move(table_name), schema,
+                                                should_persist, data_root);
   if (!maybe_utilities.ok()) {
     return maybe_utilities.status();
   }
@@ -302,7 +614,8 @@ Status Table::SampleRowKeys(
 
   // First, stream all rows and cells and compute the offsets.
   auto all_rows_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
-  auto maybe_all_rows_stream = utilities_->CreateCellStream(all_rows_set, absl::nullopt);
+  auto maybe_all_rows_stream =
+      utilities_->CreateCellStream(all_rows_set, absl::nullopt);
   if (!maybe_all_rows_stream) {
     return maybe_all_rows_stream.status();
   }
@@ -427,117 +740,21 @@ StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
     btadmin::ModifyColumnFamiliesRequest const& request) {
   std::cout << "Modify column families: " << request.DebugString() << std::endl;
   std::unique_lock<std::mutex> lock(mu_);
-  auto new_schema = schema_;
-  auto new_column_families = column_families_;
-  for (auto const& modification : request.modifications()) {
-    if (modification.drop()) {
-      if (IsDeleteProtectedNoLock()) {
-        return FailedPreconditionError(
-            "The table has deletion protection.",
-            GCP_ERROR_INFO().WithMetadata("modification",
-                                          modification.DebugString()));
-      }
-      if (new_column_families.erase(modification.id()) == 0) {
-        return NotFoundError("No such column family.",
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "modification", modification.DebugString()));
-      }
-      if (new_schema.mutable_column_families()->erase(modification.id()) == 0) {
-        return InternalError("Column family with no schema.",
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "modification", modification.DebugString()));
-      }
-    } else if (modification.has_update()) {
-      auto& cfs = *new_schema.mutable_column_families();
-      auto cf_it = cfs.find(modification.id());
-      if (cf_it == cfs.end()) {
-        return NotFoundError("No such column family.",
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "modification", modification.DebugString()));
-      }
 
-      using google::protobuf::util::FieldMaskUtil;
-
-      using google::protobuf::util::FieldMaskUtil;
-      google::protobuf::FieldMask effective_mask;
-      if (modification.has_update_mask()) {
-        effective_mask = modification.update_mask();
-        if (!FieldMaskUtil::IsValidFieldMask<
-                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
-          return InvalidArgumentError(
-              "Update mask is invalid.",
-              GCP_ERROR_INFO().WithMetadata("modification",
-                                            modification.DebugString()));
-        }
-      } else {
-        FieldMaskUtil::FromString("gc_rule", &effective_mask);
-        if (!FieldMaskUtil::IsValidFieldMask<
-                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
-          return InternalError("Default update mask is invalid.",
-                               GCP_ERROR_INFO().WithMetadata(
-                                   "mask", effective_mask.DebugString()));
-        }
-      }
-
-      // Disallow the modification of the type of data stored in the
-      // column family (the aggregate type -- which is currently the
-      // only supported type -- can always be set during column family
-      // creation).
-      if (FieldMaskUtil::IsPathInFieldMask("value_type", effective_mask)) {
-        return InvalidArgumentError(
-            "The value_type cannot be changed after column family creation",
-            GCP_ERROR_INFO().WithMetadata("mask",
-                                          effective_mask.DebugString()));
-      }
-
-      FieldMaskUtil::MergeMessageTo(modification.update(), effective_mask,
-                                    FieldMaskUtil::MergeOptions(),
-                                    &(cf_it->second));
-    } else if (modification.has_create()) {
-      std::shared_ptr<ColumnFamily> cf;
-      // Have we been asked to create an aggregate column family?
-      if (modification.create().has_value_type()) {
-        auto value_type = modification.create().value_type();
-        auto maybe_cf =
-            InMemoryColumnFamily::ConstructAggregateColumnFamily(value_type);
-        if (!maybe_cf) {
-          return maybe_cf.status();
-        }
-        cf = std::move(maybe_cf.value());
-      } else {
-        cf = std::make_shared<InMemoryColumnFamily>();
-      }
-      if (!new_column_families.emplace(modification.id(), cf).second) {
-        return AlreadyExistsError(
-            "Column family already exists.",
-            GCP_ERROR_INFO().WithMetadata("modification",
-                                          modification.DebugString()));
-      }
-      if (!new_schema.mutable_column_families()
-               ->emplace(modification.id(), modification.create())
-               .second) {
-        return InternalError("Column family with schema but no data.",
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "modification", modification.DebugString()));
-      }
-    } else {
-      return UnimplementedError(
-          "Unsupported modification.",
-          GCP_ERROR_INFO().WithMetadata("modification",
-                                        modification.DebugString()));
-    }
+  auto maybe_new_schema = utilities_->ModifyColumnFamilies(request, schema_);
+  if (!maybe_new_schema) {
+    return maybe_new_schema.status();
   }
-  // Defer destroying potentially large objects to after releasing the lock.
-  column_families_.swap(new_column_families);
+  auto new_schema = maybe_new_schema.value();
+
   schema_ = new_schema;
   lock.unlock();
   return new_schema;
 }
 // NOLINTEND(readability-function-cognitive-complexity)
 
-Status Table::Update(
-    google::bigtable::admin::v2::Table const& new_schema,
-    google::protobuf::FieldMask const& to_update) {
+Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
+                     google::protobuf::FieldMask const& to_update) {
   std::cout << "Update schema: " << new_schema.DebugString()
             << " mask: " << to_update.DebugString() << std::endl;
   using google::protobuf::util::FieldMaskUtil;
@@ -567,8 +784,7 @@ Status Table::Update(
   return Status();
 }
 
-Status Table::MutateRow(
-    google::bigtable::v2::MutateRowRequest const& request) {
+Status Table::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
   std::lock_guard<std::mutex> lock(mu_);
 
   return DoMutationsWithPossibleRollback(request.row_key(),
@@ -587,7 +803,8 @@ Status Table::DoMutationsWithPossibleRollback(
                                       absl::StrFormat("%zu", row_key.size())));
   }
 
-  std::unique_ptr<RowTransaction> row_transaction = utilities_->NewRowTransaction(this->get(), row_key);
+  std::unique_ptr<RowTransaction> row_transaction =
+      utilities_->NewRowTransaction(this->get(), row_key);
 
   for (auto const& mutation : mutations) {
     if (mutation.has_set_cell()) {
@@ -671,226 +888,9 @@ Status Table::DoMutationsWithPossibleRollback(
   // the transaction.
   return row_transaction->commit();
 }
-// NOLINTEND(readability-function-cognitive-complexity)
 
-StatusOr<google::bigtable::admin::v2::Table>
-PersistentTable::ModifyColumnFamilies(
-    google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request) {
-  std::cout << "Modify persistent column families: " << request.DebugString()
-            << std::endl;
-
-  std::unique_lock<std::mutex> lock(mu_);
-  auto new_schema = schema_;
-  auto new_handles = column_families_;
-
-  ModifyCfRollback rollback(db_);
-
-  auto rollback_and_return =
-      [&](Status const& original) -> StatusOr<btadmin::Table> {
-    Status rb = rollback.Rollback();
-    if (!rb.ok()) {
-      return InternalError(
-          "ModifyColumnFamilies failed and rollback failed: " + rb.message(),
-          GCP_ERROR_INFO()
-              .WithMetadata("original_error", original.message())
-              .WithMetadata("request", request.DebugString()));
-    }
-    return original;
-  };
-
-  for (auto const& modification : request.modifications()) {
-    if (modification.drop()) {
-      if (schema_.deletion_protection()) {
-        return rollback_and_return(FailedPreconditionError(
-            "The table has deletion protection.",
-            GCP_ERROR_INFO().WithMetadata("modification",
-                                          modification.DebugString())));
-      }
-
-      auto it = new_handles.find(modification.id());
-      if (it == new_handles.end()) {
-        return rollback_and_return(
-            NotFoundError("No such column family.",
-                          GCP_ERROR_INFO().WithMetadata(
-                              "modification", modification.DebugString())));
-      }
-
-      auto cf_obj = it->second;
-
-      auto persistent_cf =
-          std::static_pointer_cast<PersistentColumnFamily>(cf_obj);
-
-      std::shared_ptr<rocksdb::ColumnFamilyHandle> old_handle =
-          persistent_cf->GetHandle();
-
-      rocksdb::ColumnFamilyDescriptor desc;
-      {
-        rocksdb::Status s = old_handle->GetDescriptor(&desc);
-        if (!s.ok()) {
-          return rollback_and_return(InternalError(
-              "Failed to get CF descriptor before drop: " + s.ToString(),
-              GCP_ERROR_INFO().WithMetadata("modification",
-                                            modification.DebugString())));
-        }
-      }
-
-      rollback.RecordDropped(modification.id(), persistent_cf, old_handle,
-                             desc);
-
-      {
-        rocksdb::Status s = db_->DropColumnFamily(old_handle.get());
-        if (!s.ok()) {
-          return rollback_and_return(InternalError(
-              "Failed to drop column family in RocksDB: " + s.ToString(),
-              GCP_ERROR_INFO().WithMetadata("modification",
-                                            modification.DebugString())));
-        }
-      }
-
-      new_handles.erase(modification.id());
-      if (new_schema.mutable_column_families()->erase(modification.id()) == 0) {
-        return rollback_and_return(
-            InternalError("Column family with no schema.",
-                          GCP_ERROR_INFO().WithMetadata(
-                              "modification", modification.DebugString())));
-      }
-
-    } else if (modification.has_update()) {
-      auto& cfs = *new_schema.mutable_column_families();
-      auto cf_it = cfs.find(modification.id());
-      if (cf_it == cfs.end()) {
-        return rollback_and_return(
-            NotFoundError("No such column family.",
-                          GCP_ERROR_INFO().WithMetadata(
-                              "modification", modification.DebugString())));
-      }
-
-      using google::protobuf::util::FieldMaskUtil;
-
-      google::protobuf::FieldMask effective_mask;
-      if (modification.has_update_mask()) {
-        effective_mask = modification.update_mask();
-        if (!FieldMaskUtil::IsValidFieldMask<
-                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
-          return rollback_and_return(InvalidArgumentError(
-              "Update mask is invalid.",
-              GCP_ERROR_INFO().WithMetadata("modification",
-                                            modification.DebugString())));
-        }
-      } else {
-        FieldMaskUtil::FromString("gc_rule", &effective_mask);
-        if (!FieldMaskUtil::IsValidFieldMask<
-                google::bigtable::admin::v2::ColumnFamily>(effective_mask)) {
-          return rollback_and_return(
-              InternalError("Default update mask is invalid.",
-                            GCP_ERROR_INFO().WithMetadata(
-                                "mask", effective_mask.DebugString())));
-        }
-      }
-
-      // Disallow the modification of the type of data stored in the
-      // column family (the aggregate type -- which is currently the
-      // only supported type -- can always be set during column family
-      // creation).
-      if (FieldMaskUtil::IsPathInFieldMask("value_type", effective_mask)) {
-        return rollback_and_return(InvalidArgumentError(
-            "The value_type cannot be changed after column family creation",
-            GCP_ERROR_INFO().WithMetadata("mask",
-                                          effective_mask.DebugString())));
-      }
-
-      FieldMaskUtil::MergeMessageTo(modification.update(), effective_mask,
-                                    FieldMaskUtil::MergeOptions(),
-                                    &(cf_it->second));
-
-    } else if (modification.has_create()) {
-      if (new_handles.find(modification.id()) != new_handles.end()) {
-        return rollback_and_return(AlreadyExistsError(
-            "Column family already exists.",
-            GCP_ERROR_INFO().WithMetadata("modification",
-                                          modification.DebugString())));
-      }
-
-      std::shared_ptr<PersistentColumnFamily> cf;
-      // Have we been asked to create an aggregate column family?
-
-      if (modification.create().has_value_type()) {
-        auto value_type = modification.create().value_type();
-        auto maybe_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
-            value_type, db_, modification.id());
-        if (!maybe_cf) {
-          return rollback_and_return(maybe_cf.status());
-        }
-        cf = std::move(maybe_cf.value());
-      } else {
-        auto maybe_cf = PersistentColumnFamily::Create(
-            db_, rocksdb::ColumnFamilyOptions(), modification.id());
-        if (!maybe_cf.ok()) {
-          return rollback_and_return(
-              InternalError("Failed to create new column family; " +
-                                maybe_cf.status().message(),
-                            GCP_ERROR_INFO().WithMetadata(
-                                "modification", modification.DebugString())));
-        }
-        cf = maybe_cf.value();
-      }
-
-      rollback.RecordCreated(modification.id(), cf->GetHandle());
-
-      new_handles.emplace(modification.id(), cf);
-      if (!new_schema.mutable_column_families()
-               ->emplace(modification.id(), modification.create())
-               .second) {
-        return rollback_and_return(
-            InternalError("Column family with schema but no data.",
-                          GCP_ERROR_INFO().WithMetadata(
-                              "modification", modification.DebugString())));
-      }
-
-    } else {
-      return rollback_and_return(
-          UnimplementedError("Unsupported modification.",
-                             GCP_ERROR_INFO().WithMetadata(
-                                 "modification", modification.DebugString())));
-    }
-  }
-
-  rollback.Commit();
-
-  // Defer destroying potentially large objects to after releasing the lock.
-  column_families_.swap(new_handles);
-  schema_ = new_schema;
-  lock.unlock();
-
-  return new_schema;
-}
-
-StatusOr<google::bigtable::v2::CheckAndMutateRowResponse>
-PersistentTable::CheckAndMutateRow(
-    google::bigtable::v2::CheckAndMutateRowRequest const& request) {
-  return Status();
-}
-
-Status PersistentTable::DoMutationsWithPossibleRollbackLocked(
-    std::string const& row_key,
-    google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
-        mutations) {
-  return Status();
-}
-
-StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
-PersistentTable::ReadModifyWriteRow(
-    google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
-  return Status();
-}
-
-Status PersistentTable::SampleRowKeys(
-    double pass_probability,
-    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
-  return Status();
-}
-
-bool FilteredInMemoryTableStream::ApplyFilter(InternalFilter const& internal_filter) {
+bool FilteredInMemoryTableStream::ApplyFilter(
+    InternalFilter const& internal_filter) {
   if (!absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
       !absl::holds_alternative<ColumnRange>(internal_filter)) {
     return MergeCellStreams::ApplyFilter(internal_filter);
@@ -942,8 +942,7 @@ bool FilteredPersistentTableStream::ApplyFilter(
 }
 
 std::vector<CellStream> FilteredPersistentTableStream::CreateCellStreams(
-    std::vector<std::unique_ptr<AbstractCellStreamImpl>>
-        cf_streams) {
+    std::vector<std::unique_ptr<AbstractCellStreamImpl>> cf_streams) {
   std::vector<CellStream> res;
   res.reserve(cf_streams.size());
   for (auto& stream : cf_streams) {
@@ -1021,8 +1020,8 @@ Table::CheckAndMutateRow(
 
   StatusOr<CellStream> maybe_stream;
   if (request.has_predicate_filter()) {
-    maybe_stream =
-        utilities_->CreateCellStream(range_set, std::move(request.predicate_filter()));
+    maybe_stream = utilities_->CreateCellStream(
+        range_set, std::move(request.predicate_filter()));
   } else {
     maybe_stream = utilities_->CreateCellStream(range_set, absl::nullopt);
   }
@@ -1058,9 +1057,8 @@ Table::CheckAndMutateRow(
 }
 
 // TODO: Filters for Persistency
-Status Table::ReadRows(
-    google::bigtable::v2::ReadRowsRequest const& request,
-    RowStreamer& row_streamer) const {
+Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
+                       RowStreamer& row_streamer) const {
   std::shared_ptr<StringRangeSet> row_set;
   // We need to check that, not only do we have rows, but that it is
   // not empty (i.e. at least one of row_range or rows is specified).
@@ -1079,7 +1077,8 @@ Status Table::ReadRows(
 
   StatusOr<CellStream> maybe_stream;
   if (request.has_filter()) {
-    maybe_stream = utilities_->CreateCellStream(row_set, std::move(request.filter()));
+    maybe_stream =
+        utilities_->CreateCellStream(row_set, std::move(request.filter()));
   } else {
     maybe_stream = utilities_->CreateCellStream(row_set, absl::nullopt);
   }
@@ -1368,15 +1367,16 @@ Status InMemoryRowTransaction::DeleteFromColumn(
 }
 
 Status InMemoryRowTransaction::DeleteFromRow() {
-  bool row_existed;
-  for (auto column_family = utilities_->begin(); column_family != utilities_->end(); ++column_family) {
+  bool row_existed = false;
+  for (auto column_family = utilities_->begin();
+       column_family != utilities_->end(); ++column_family) {
     auto deleted_columns = column_family->second->DeleteRow(row_key_);
 
     for (auto& column : deleted_columns) {
       for (auto& cell : column.second) {
         RestoreValue restore_value = {*column_family->second,
-                                       std::move(column.first), cell.timestamp,
-                                       std::move(cell.value)};
+                                      std::move(column.first), cell.timestamp,
+                                      std::move(cell.value)};
         undo_.emplace(std::move(restore_value));
         row_existed = true;
       }
@@ -1409,7 +1409,6 @@ Status InMemoryRowTransaction::DeleteFromFamily(
                                       delete_from_family.family_name()));
   }
 
-  std::map<std::string, ColumnFamilyRow>::iterator column_family_row_it;
   auto ccf = column_family_it->second;
   if (!ccf->RowKeyExists(row_key_)) {
     // The row does not exist
@@ -1572,25 +1571,25 @@ Status PersistentRowTransaction::DeleteFromColumn(
     ::google::bigtable::v2::Mutation_DeleteFromColumn const&
         delete_from_column) {
   // TODO: Implement
-  return Status();
+  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
 }
 
 Status PersistentRowTransaction::DeleteFromRow() {
   // TODO: Implement
-  return Status();
+  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
 }
 
 Status PersistentRowTransaction::DeleteFromFamily(
     ::google::bigtable::v2::Mutation_DeleteFromFamily const&
         delete_from_family) {
   // TODO: Implement
-  return Status();
+  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
 }
 
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
 PersistentRowTransaction::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
-  return Status();
+  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
 }
 
 // ProcessReadModifyWriteRuleResult records the result of a
@@ -1673,11 +1672,11 @@ InMemoryRowTransaction::ReadModifyWriteRow(
       return maybe_column_family.status();
     }
 
-    // For now, let's keep this. Not sure how this will look for the Persistent CF yet
-    // (RocksDB has Merge operators), so I don't think it makes sense to make ReadModifyWrite
-    // A part of the ColumnFamily API.
-    auto column_family =
-      std::static_pointer_cast<InMemoryColumnFamily>(maybe_column_family.value());
+    // For now, let's keep this. Not sure how this will look for the Persistent
+    // CF yet (RocksDB has Merge operators), so I don't think it makes sense to
+    // make ReadModifyWrite A part of the ColumnFamily API.
+    auto column_family = std::static_pointer_cast<InMemoryColumnFamily>(
+        maybe_column_family.value());
 
     if (rule.has_append_value()) {
       auto result = column_family->ReadModifyWrite(

@@ -336,7 +336,9 @@ class ColumnFamily {
 
   virtual void RemoveAllDataFromColumnFamily() = 0;
 
-  virtual std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(std::shared_ptr<StringRangeSet const> row_set, std::string column_family_name) = 0;
+  virtual std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
+      std::shared_ptr<StringRangeSet const> row_set,
+      std::string column_family_name) = 0;
 
   virtual rocksdb::ColumnFamilyHandle* GetRaw() = 0;
 
@@ -501,7 +503,9 @@ class InMemoryColumnFamily : public ColumnFamily {
 
   void RemoveAllDataFromColumnFamily() override { rows_.clear(); };
 
-  std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(std::shared_ptr<StringRangeSet const> row_set, std::string column_family_name) override;
+  std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
+      std::shared_ptr<StringRangeSet const> row_set,
+      std::string column_family_name) override;
 
   rocksdb::ColumnFamilyHandle* GetRaw() override { return nullptr; };
 
@@ -558,7 +562,9 @@ class PersistentColumnFamily : public ColumnFamily {
 
   rocksdb::ColumnFamilyHandle* GetRaw() override { return handle_.get(); }
 
-  std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(std::shared_ptr<StringRangeSet const> row_set, std::string column_family_name) override;
+  std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
+      std::shared_ptr<StringRangeSet const> row_set,
+      std::string column_family_name) override;
 
   bool RowKeyExists(std::string const& row_key) override;
 
@@ -621,9 +627,9 @@ class FilteredInMemoryColumnFamilyStream : public AbstractCellStreamImpl {
    * @row_set the row set indicating which row keys include in the returned
    *     values.
    */
-  FilteredInMemoryColumnFamilyStream(InMemoryColumnFamily const& column_family,
-                             std::string column_family_name,
-                             std::shared_ptr<StringRangeSet const> row_set);
+  FilteredInMemoryColumnFamilyStream(
+      InMemoryColumnFamily const& column_family, std::string column_family_name,
+      std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
@@ -691,7 +697,8 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
  public:
   FilteredPersistentColumnFamilyStream(
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db, std::shared_ptr<StringRangeSet const> row_set);
+      std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db,
+      std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
