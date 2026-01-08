@@ -17,7 +17,6 @@
 #include "google/cloud/status_or.h"
 #include "google/cloud/testing_util/chrono_literals.h"
 #include "google/cloud/testing_util/status_matchers.h"
-#include "absl/types/optional.h"
 #include "absl/types/variant.h"
 #include "cell_view.h"
 #include "gmock/gmock.h"
@@ -1931,7 +1930,8 @@ TEST(FiltersEndToEnd, ColumnRange) {
   filter.mutable_column_range_filter()->set_start_qualifier_closed("b00");
   filter.mutable_column_range_filter()->set_end_qualifier_open("b02");
 
-  auto maybe_stream = table->CreateCellStream(all_rows_set, filter);
+  auto utilities = table->GetUtilities();
+  auto maybe_stream = utilities->CreateCellStream(all_rows_set, filter);
   ASSERT_STATUS_OK(maybe_stream);
 
   std::vector<TestCell> expected = {

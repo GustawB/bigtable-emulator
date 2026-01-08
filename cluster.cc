@@ -97,8 +97,7 @@ StatusOr<btadmin::Table> Cluster::CreateTable(std::string const& table_name,
                                               btadmin::Table schema) {
   schema.set_name(table_name);
   std::cout << "Creating table " << table_name << std::endl;
-  auto maybe_table =
-      Table::Create(table_name, std::move(schema), should_persist_);
+  auto maybe_table = Table::Create(std::move(schema), should_persist_);
   if (!maybe_table) {
     return maybe_table.status();
   }

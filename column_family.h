@@ -334,6 +334,16 @@ class ColumnFamily {
       std::string const& row_key, std::string const& column_qualifier,
       std::chrono::milliseconds timestamp) = 0;
 
+  virtual void RemoveAllDataFromColumnFamily() = 0;
+
+  virtual std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
+      std::shared_ptr<StringRangeSet const> row_set,
+      std::string column_family_name) = 0;
+
+  virtual rocksdb::ColumnFamilyHandle* GetRaw() = 0;
+
+  virtual bool RowKeyExists(std::string const& row_key) = 0;
+
   absl::optional<google::bigtable::admin::v2::Type> GetValueType() {
     return value_type_;
   };
@@ -491,7 +501,17 @@ class InMemoryColumnFamily : public ColumnFamily {
     return rows_.erase(row_it);
   }
 
-  void clear() { rows_.clear(); }
+  void RemoveAllDataFromColumnFamily() override { rows_.clear(); };
+
+  std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
+      std::shared_ptr<StringRangeSet const> row_set,
+      std::string column_family_name) override;
+
+  rocksdb::ColumnFamilyHandle* GetRaw() override { return nullptr; };
+
+  bool RowKeyExists(std::string const& row_key) override {
+    return this->find(row_key) != this->end();
+  }
 
  private:
   std::map<std::string, ColumnFamilyRow> rows_;
@@ -537,6 +557,18 @@ class PersistentColumnFamily : public ColumnFamily {
   absl::optional<Cell> DeleteTimeStamp(
       std::string const& row_key, std::string const& column_qualifier,
       std::chrono::milliseconds timestamp) override;
+
+  void RemoveAllDataFromColumnFamily() override { throw "UNIMPLEMENTED"; };
+
+  rocksdb::ColumnFamilyHandle* GetRaw() override { return handle_.get(); }
+
+  std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
+      std::shared_ptr<StringRangeSet const> row_set,
+      std::string column_family_name) override;
+
+  bool RowKeyExists(std::string const& row_key) override {
+    throw "UNIMPLEMENTED";
+  };
 
   void ResetHandle(std::shared_ptr<rocksdb::ColumnFamilyHandle> h) {
     handle_ = std::move(h);
@@ -585,7 +617,7 @@ class PersistentColumnFamily : public ColumnFamily {
  * Objects of this class are not thread safe. Their users need to ensure that
  * underlying `ColumnFamily` object tree doesn't change.
  */
-class FilteredColumnFamilyStream : public AbstractCellStreamImpl {
+class FilteredInMemoryColumnFamilyStream : public AbstractCellStreamImpl {
  public:
   /**
    * Construct a new object.
@@ -597,9 +629,9 @@ class FilteredColumnFamilyStream : public AbstractCellStreamImpl {
    * @row_set the row set indicating which row keys include in the returned
    *     values.
    */
-  FilteredColumnFamilyStream(InMemoryColumnFamily const& column_family,
-                             std::string column_family_name,
-                             std::shared_ptr<StringRangeSet const> row_set);
+  FilteredInMemoryColumnFamilyStream(
+      InMemoryColumnFamily const& column_family, std::string column_family_name,
+      std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
@@ -667,7 +699,8 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
  public:
   FilteredPersistentColumnFamilyStream(
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db);
+      std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db,
+      std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
@@ -684,6 +717,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
 
   std::shared_ptr<rocksdb::DB> db_;
+  std::shared_ptr<StringRangeSet const> row_set_;
   mutable bool initialized_{false};
   mutable std::unique_ptr<rocksdb::Iterator> it_;
   mutable std::string curr_row_;

@@ -141,14 +141,16 @@ Status HasCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
                std::string const& column_family, std::string const& row_key,
                std::string const& column_qualifier, int64_t timestamp_micros,
                std::string const& value) {
-  auto column_family_it = table->find(column_family);
-  if (column_family_it == table->end()) {
+  auto utilities = table->GetUtilities();
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
     return NotFoundError(
         "column family not found in table",
         GCP_ERROR_INFO().WithMetadata("column family", column_family));
   }
 
-  auto const& cf = column_family_it->second;
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   auto column_family_row_it = cf->find(row_key);
   if (column_family_row_it == cf->end()) {
     return NotFoundError("no row key found in column family",
@@ -190,14 +192,16 @@ Status HasColumn(
     std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
     std::string const& column_family, std::string const& row_key,
     std::string const& column_qualifier) {
-  auto column_family_it = table->find(column_family);
-  if (column_family_it == table->end()) {
+  auto utilities = table->GetUtilities();
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
     return NotFoundError(
         "column family not found in table",
         GCP_ERROR_INFO().WithMetadata("column family", column_family));
   }
 
-  auto const& cf = column_family_it->second;
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   auto column_family_row_it = cf->find(row_key);
   if (column_family_row_it == cf->end()) {
     return NotFoundError("row key not found in column family",
@@ -221,14 +225,16 @@ StatusOr<std::map<std::chrono::milliseconds, std::string>> GetColumn(
     std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
     std::string const& column_family, std::string const& row_key,
     std::string const& column_qualifier) {
-  auto column_family_it = table->find(column_family);
-  if (column_family_it == table->end()) {
+  auto utilities = table->GetUtilities();
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
     return NotFoundError(
         "column family not found in table",
         GCP_ERROR_INFO().WithMetadata("column family", column_family));
   }
 
-  auto const& cf = column_family_it->second;
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   auto column_family_row_it = cf->find(row_key);
   if (column_family_row_it == cf->end()) {
     return NotFoundError("row key not found in column family",
@@ -253,14 +259,16 @@ StatusOr<std::map<std::chrono::milliseconds, std::string>> GetColumn(
 
 Status HasRow(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
               std::string const& column_family, std::string const& row_key) {
-  auto column_family_it = table->find(column_family);
-  if (column_family_it == table->end()) {
+  auto utilities = table->GetUtilities();
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
     return NotFoundError(
         "column family not found in table",
         GCP_ERROR_INFO().WithMetadata("column family", column_family));
   }
 
-  auto const& cf = column_family_it->second;
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
   auto column_family_row_it = cf->find(row_key);
   if (column_family_row_it == cf->end()) {
     return NotFoundError("row key not found in column family",
@@ -893,7 +901,7 @@ TEST(TransactionRollback, AddToCellRejectsRequestsToNonAggregateColumnFamily) {
   auto const timestamp_micros = 1000;
 
   auto maybe_table = Table::Create(
-      CreateSchema(table_name, {{column_family_name, column_family}}));
+      CreateSchema(table_name, {{column_family_name, column_family}}), false);
 
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -928,10 +936,12 @@ TEST(TransactionRollback, AddToCellTestSum) {
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
-  auto maybe_table = Table::Create(CreateSchema(
-      table_name, {{column_family_name,
-                    MakeBEAggregateCFProto(
-                        google::bigtable::admin::v2::Type::Aggregate::kSum)}}));
+  auto maybe_table = Table::Create(
+      CreateSchema(table_name,
+                   {{column_family_name,
+                     MakeBEAggregateCFProto(
+                         google::bigtable::admin::v2::Type::Aggregate::kSum)}}),
+      false);
   ASSERT_STATUS_OK(maybe_table);
 
   auto table = maybe_table.value();
@@ -986,10 +996,12 @@ TEST(TransactionRollback, AddToCellTestMax) {
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
-  auto maybe_table = Table::Create(CreateSchema(
-      table_name, {{column_family_name,
-                    MakeBEAggregateCFProto(
-                        google::bigtable::admin::v2::Type::Aggregate::kMax)}}));
+  auto maybe_table = Table::Create(
+      CreateSchema(table_name,
+                   {{column_family_name,
+                     MakeBEAggregateCFProto(
+                         google::bigtable::admin::v2::Type::Aggregate::kMax)}}),
+      false);
   ASSERT_STATUS_OK(maybe_table);
 
   auto table = maybe_table.value();
@@ -1034,10 +1046,12 @@ TEST(TransactionRollback, AddToCellTestMin) {
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
-  auto maybe_table = Table::Create(CreateSchema(
-      table_name, {{column_family_name,
-                    MakeBEAggregateCFProto(
-                        google::bigtable::admin::v2::Type::Aggregate::kMin)}}));
+  auto maybe_table = Table::Create(
+      CreateSchema(table_name,
+                   {{column_family_name,
+                     MakeBEAggregateCFProto(
+                         google::bigtable::admin::v2::Type::Aggregate::kMin)}}),
+      false);
   ASSERT_STATUS_OK(maybe_table);
 
   auto table = maybe_table.value();
