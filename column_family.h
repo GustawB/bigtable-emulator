@@ -20,6 +20,7 @@
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
+#include "key_coder.h"
 #include "range_set.h"
 #include <google/bigtable/admin/v2/types.pb.h>
 #include <rocksdb/db.h>
@@ -30,7 +31,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "key_coder.h"
 
 namespace google {
 namespace cloud {
@@ -719,7 +719,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   mutable bool initialized_{false};
   mutable std::unique_ptr<rocksdb::Iterator> it_;
   mutable std::string curr_value_string_;
-    mutable DecodeResult curr_decoded_key_;
+  mutable DecodeResult curr_decoded_key_;
   mutable absl::optional<CellView> cur_value_;
 
   // TODO: Discuss if its okay, or should we e.g. forbid using ':' elsewhere

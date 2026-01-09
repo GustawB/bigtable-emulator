@@ -536,9 +536,10 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
   if (!cur_value_) {
     curr_value_string_ = it_->value().ToString();
-    cur_value_ =
-        CellView(curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
-                 std::chrono::milliseconds(curr_decoded_key_.timestamp), curr_value_string_);
+    cur_value_ = CellView(
+        curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
+        std::chrono::milliseconds(curr_decoded_key_.timestamp),
+        curr_value_string_);
   }
   return cur_value_.value();
 }
