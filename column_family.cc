@@ -21,6 +21,7 @@
 #include "cell_view.h"
 #include "filter.h"
 #include "filtered_map.h"
+#include "key_coder.h"
 #include <google/bigtable/admin/v2/types.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <cassert>
@@ -535,10 +536,9 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
   if (!cur_value_) {
     curr_value_string_ = it_->value().ToString();
-    int64_t milliseconds = GetTimestamp(it_->key().ToString());
     cur_value_ =
-        CellView(curr_row_, column_family_name_, curr_col_,
-                 std::chrono::milliseconds(milliseconds), curr_value_string_);
+        CellView(curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
+                 std::chrono::milliseconds(curr_decoded_key_.timestamp), curr_value_string_);
   }
   return cur_value_.value();
 }
@@ -549,8 +549,7 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   if (mode == NextMode::kCell) {
     it_->Next();
     if (it_->Valid()) {
-      curr_row_ = GetRowName(it_->key().ToString());
-      curr_col_ = GetColumnName(it_->key().ToString());
+      curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
     }
     return true;
   } else {
@@ -569,32 +568,12 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
         db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();
     if (it_->Valid()) {
-      curr_row_ = GetRowName(it_->key().ToString());
-      curr_col_ = GetColumnName(it_->key().ToString());
+      curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
     } else {
       // TODO: remove debug print
       std::cout << it_->status().ToString() << std::endl;
     }
   }
-}
-
-std::string FilteredPersistentColumnFamilyStream::GetRowName(
-    std::string const& key) const {
-  std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
-  return split[0];
-}
-
-std::string FilteredPersistentColumnFamilyStream::GetColumnName(
-    std::string const& key) const {
-  std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
-  return split[1];
-}
-
-int64_t FilteredPersistentColumnFamilyStream::GetTimestamp(
-    std::string const& key) const {
-  std::vector<std::string> split = absl::StrSplit(key, row_col_separator_);
-  int64_t ts_mirror = std::stoll(split[2], nullptr, 16);
-  return std::numeric_limits<int64_t>::max() - ts_mirror;
 }
 
 StatusOr<std::shared_ptr<ColumnFamily>>

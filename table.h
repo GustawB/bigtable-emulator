@@ -322,10 +322,6 @@ class RowTransaction {
       google::bigtable::v2::ReadModifyWriteRowRequest const& request) = 0;
 
  protected:
-  std::string prepare_key(std::string const& column_qualifier,
-                          int64_t ts) const;
-  std::string prepare_partial_key(std::string const& column_qualifier) const;
-
   std::shared_ptr<TableUtilities> utilities_;
 
   virtual Status PerformAddToCell(

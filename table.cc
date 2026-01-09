@@ -1325,18 +1325,6 @@ Status RowTransaction::MergeToCell(
       "Unsupported mutation type.",
       GCP_ERROR_INFO().WithMetadata("mutation", merge_to_cell.DebugString()));
 }
-
-std::string RowTransaction::prepare_key(std::string const& column_qualifier,
-                                        int64_t ts) const {
-  int64_t mirror = std::numeric_limits<int64_t>::max() - ts;
-  return row_key_ + ':' + column_qualifier + ':' +
-         absl::StrFormat("%016x", mirror);
-}
-
-std::string RowTransaction::prepare_partial_key(
-    std::string const& column_qualifier) const {
-  return row_key_ + ':' + column_qualifier;
-}
 // NOLINTEND(readability-convert-member-functions-to-static)
 
 Status InMemoryRowTransaction::DeleteFromColumn(
@@ -1522,9 +1510,8 @@ Status PersistentRowTransaction::SetCell(
             << column_family->GetRaw()->GetName() << "; row key: " << row_key_
             << "; column: " << set_cell.column_qualifier()
             << "; value: " << set_cell.value() << std::endl;
-
   std::string prepared_key =
-      prepare_key(set_cell.column_qualifier(), timestamp.count());
+      KeyCoder::Encode(row_key_, set_cell.column_qualifier(), timestamp.count());
   rocksdb::Status status =
       txn_->Put(column_family->GetRaw(), prepared_key, set_cell.value());
 
@@ -1544,7 +1531,7 @@ Status PersistentRowTransaction::PerformAddToCell(
   rocksdb::ColumnFamilyHandle* raw_cf = cf->GetRaw();
 
   std::string partial_key =
-      prepare_partial_key(add_to_cell.column_qualifier().raw_value());
+      KeyCoder::PartialEncode(row_key_, add_to_cell.column_qualifier().raw_value());
   rocksdb::Endpoint start(partial_key, true);
   rocksdb::Endpoint end(partial_key, true);
   rocksdb::Status status = txn_->GetRangeLock(raw_cf, start, end);
@@ -1569,7 +1556,7 @@ Status PersistentRowTransaction::PerformAddToCell(
   }
 
   std::string new_key =
-      prepare_key(add_to_cell.column_qualifier().raw_value(), ts_ms.count());
+      KeyCoder::Encode(row_key_, add_to_cell.column_qualifier().raw_value(), ts_ms.count());
   status = txn_->Put(raw_cf, new_key, std::move(new_value));
   if (!status.ok()) {
     return InternalError(

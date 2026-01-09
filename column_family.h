@@ -30,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "key_coder.h"
 
 namespace google {
 namespace cloud {
@@ -709,9 +710,6 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
 
  private:
   void InitializeIfNeeded() const;
-  std::string GetRowName(std::string const& key) const;
-  std::string GetColumnName(std::string const& key) const;
-  int64_t GetTimestamp(std::string const& key) const;
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
@@ -720,9 +718,8 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   std::shared_ptr<StringRangeSet const> row_set_;
   mutable bool initialized_{false};
   mutable std::unique_ptr<rocksdb::Iterator> it_;
-  mutable std::string curr_row_;
-  mutable std::string curr_col_;
   mutable std::string curr_value_string_;
+    mutable DecodeResult curr_decoded_key_;
   mutable absl::optional<CellView> cur_value_;
 
   // TODO: Discuss if its okay, or should we e.g. forbid using ':' elsewhere
