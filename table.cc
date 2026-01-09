@@ -1325,18 +1325,6 @@ Status RowTransaction::MergeToCell(
       "Unsupported mutation type.",
       GCP_ERROR_INFO().WithMetadata("mutation", merge_to_cell.DebugString()));
 }
-
-std::string RowTransaction::prepare_key(std::string const& column_qualifier,
-                                        int64_t ts) const {
-  int64_t mirror = std::numeric_limits<int64_t>::max() - ts;
-  return row_key_ + ':' + column_qualifier + ':' +
-         absl::StrFormat("%016x", mirror);
-}
-
-std::string RowTransaction::prepare_partial_key(
-    std::string const& column_qualifier) const {
-  return row_key_ + ':' + column_qualifier;
-}
 // NOLINTEND(readability-convert-member-functions-to-static)
 
 Status InMemoryRowTransaction::DeleteFromColumn(
@@ -1522,9 +1510,8 @@ Status PersistentRowTransaction::SetCell(
             << column_family->GetRaw()->GetName() << "; row key: " << row_key_
             << "; column: " << set_cell.column_qualifier()
             << "; value: " << set_cell.value() << std::endl;
-
-  std::string prepared_key =
-      prepare_key(set_cell.column_qualifier(), timestamp.count());
+  std::string prepared_key = KeyCoder::Encode(
+      row_key_, set_cell.column_qualifier(), timestamp.count());
   rocksdb::Status status =
       txn_->Put(column_family->GetRaw(), prepared_key, set_cell.value());
 
@@ -1543,10 +1530,17 @@ Status PersistentRowTransaction::PerformAddToCell(
     std::string& value) {
   rocksdb::ColumnFamilyHandle* raw_cf = cf->GetRaw();
 
-  std::string partial_key =
-      prepare_partial_key(add_to_cell.column_qualifier().raw_value());
+  std::string partial_key = KeyCoder::PartialEncode(
+      row_key_, add_to_cell.column_qualifier().raw_value());
   rocksdb::Endpoint start(partial_key, true);
-  rocksdb::Endpoint end(partial_key, true);
+  rocksdb::Endpoint end(partial_key + "\xFF", true);
+
+  /**
+   * This will lock a range [partial_key; partial_key + 0xFF]; because of the
+   * key encoding, the first byte after partial key in the full key will be
+   * 0x00, so this way, we will lock the range containing this key. For more
+   * detail on the encoding, see key_coder.h.
+   */
   rocksdb::Status status = txn_->GetRangeLock(raw_cf, start, end);
   if (!status.ok()) {
     return InternalError(
@@ -1568,15 +1562,16 @@ Status PersistentRowTransaction::PerformAddToCell(
     new_value = maybe_result.value();
   }
 
-  std::string new_key =
-      prepare_key(add_to_cell.column_qualifier().raw_value(), ts_ms.count());
+  std::string new_key = KeyCoder::Encode(
+      row_key_, add_to_cell.column_qualifier().raw_value(), ts_ms.count());
   status = txn_->Put(raw_cf, new_key, std::move(new_value));
   if (!status.ok()) {
     return InternalError(
         "Failed to add to cell: " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
   }
-  if (it->Valid() && it->key().starts_with(partial_key)) {
+  if (it->Valid() && it->key().starts_with(partial_key) &&
+      it->key() != new_key) {
     status = txn_->Delete(raw_cf, it->key());
     if (!status.ok()) {
       return InternalError(

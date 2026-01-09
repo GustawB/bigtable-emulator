@@ -17,13 +17,14 @@ emulator will have a backing column family in the rocksdb (represented by
 a ColumnFamilyHandle object, wrapped inside a PersistentColumnFamily class).
 
 There is no concept of a row inside rocksdb. Because of that, each key in the database
-will have a format: ```row_key + _separator_ + col_key```. For now, the separator is ';',
-but this may be a subject to change.
+will have a format: ```row_key#col_key#(~timestamp)```. '~' performed on the timestamp will preserve
+the required ordering of keys. # is a separator in the form "\x00\x01". The "logical" separator is the 0x00, and 0x01
+is there to distinguish it from the 0x00 already present in row_key or col_key. 0x00 present in them are swapped for
+"\x00\xFF". Form implementation details, see "key_coder.h". 
 
 To handle timestamps, and using it to sort keys, TimestampComparator class will be used.
 It implements the interface of the Comparator abstract class, and it basically handles the logic of
 sorting values by timestamps.
 
-Transactions will be done using ```rocksdb::WriteBatch``` objects. They allow to perform
-batch operations and perform the atomically across column families, and they let every modification
-inside them to have a different timestamp of the modification.
+Transactions will be done using pessimistic transactions built in the RocksDB. To use them,
+we use ```rocksdb::TransactionDB``` instead of the ```rocksdb::DB``` as the storage for a table.
