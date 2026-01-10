@@ -344,42 +344,6 @@ PersistentColumnFamily::~PersistentColumnFamily() {
   }
 }
 
-absl::optional<std::string> PersistentColumnFamily::SetCell(
-    std::string const& row_key, std::string const& column_qualifier,
-    std::chrono::milliseconds timestamp, std::string const& value) {
-  return {};
-}
-
-StatusOr<absl::optional<std::string>> PersistentColumnFamily::UpdateCell(
-    std::string const& row_key, std::string const& column_qualifier,
-    std::chrono::milliseconds timestamp, std::string& value) {
-  return Status();
-}
-
-std::map<std::string, std::vector<Cell>> PersistentColumnFamily::DeleteRow(
-    std::string const& row_key) {
-  return {};
-}
-
-std::vector<Cell> PersistentColumnFamily::DeleteColumn(
-    std::string const& row_key, std::string const& column_qualifier,
-    ::google::bigtable::v2::TimestampRange const& time_range) {
-  return {};
-}
-
-std::vector<Cell> PersistentColumnFamily::DeleteColumn(
-    std::map<std::string, ColumnFamilyRow>::iterator row_it,
-    std::string const& column_qualifier,
-    ::google::bigtable::v2::TimestampRange const& time_range) {
-  return {};
-}
-
-absl::optional<Cell> PersistentColumnFamily::DeleteTimeStamp(
-    std::string const& row_key, std::string const& column_qualifier,
-    std::chrono::milliseconds timestamp) {
-  return {};
-}
-
 std::unique_ptr<AbstractCellStreamImpl>
 PersistentColumnFamily::GetFilteredColumnFamilyStream(
     std::shared_ptr<StringRangeSet const> row_set,
@@ -577,7 +541,7 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
   }
 }
 
-StatusOr<std::shared_ptr<ColumnFamily>>
+StatusOr<std::shared_ptr<InMemoryColumnFamily>>
 InMemoryColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type) {
   auto cf = std::make_shared<InMemoryColumnFamily>();
@@ -604,7 +568,7 @@ InMemoryColumnFamily::ConstructAggregateColumnFamily(
 
     cf->value_type_ = std::move(value_type);
 
-    return std::static_pointer_cast<ColumnFamily>(cf);
+    return cf;
   }
 
   return InvalidArgumentError(

@@ -254,94 +254,12 @@ class ColumnFamily {
   // ConstructAggregateColumnFamily( google::bigtable::admin::v2::Type
   // value_type);
 
-  /**
-   * Insert or update and existing cell at a given row, column and timestamp.
-   *
-   * @param row_key the row key at which to update the value.
-   * @param column_qualifier the column qualifier at which to update the value.
-   * @param timestamp the time stamp at which the value will be inserted or
-   *     updated.
-   * @param value the value to insert/update.
-   *
-   * @return no value if the timestamp had no value before, otherwise
-   *     the previous value of the timestamp.
-   *
-   */
-  virtual absl::optional<std::string> SetCell(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp, std::string const& value) = 0;
-
-  /**
-   * UpdateCell is like SetCell except that, when a cell exists with
-   * the same timestamp, an update function (that depends on the column
-   * family type) is called to derive a new value from the new and
-   * existing value, and that is the value that is written.
-   *
-   * Simple (non-aggregate) column families have a default update
-   * function that just returns the new value.
-   *
-   */
-  virtual StatusOr<absl::optional<std::string>> UpdateCell(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp, std::string& value) = 0;
-
-  /**
-   * Delete the whole row from this column family.
-   *
-   * @param row_key the row key to remove.
-   * @return map from deleted column qualifiers to deleted cells.
-   */
-  virtual std::map<std::string, std::vector<Cell>> DeleteRow(
-      std::string const& row_key) = 0;
-  /**
-   * Delete cells from a row falling into a given timestamp range in one column.
-   *
-   * @param row_key the row key to remove the cells from (or the
-   *     iterator to the row - row_it - in the 2nd overloaded form of the
-   *     function).
-
-   * @param column_qualifier the column qualifier from which to delete
-   *     the values.
-   *
-   * @param time_range the timestamp range dictating which values to
-   *     delete.
-   * @return vector of deleted cells.
-   */
-  virtual std::vector<Cell> DeleteColumn(
-      std::string const& row_key, std::string const& column_qualifier,
-      ::google::bigtable::v2::TimestampRange const& time_range) = 0;
-
-  virtual std::vector<Cell> DeleteColumn(
-      std::map<std::string, ColumnFamilyRow>::iterator row_it,
-      std::string const& column_qualifier,
-      ::google::bigtable::v2::TimestampRange const& time_range) = 0;
-
-  /**
-   * Delete a cell with the given timestamp from the column given by
-   *     the given column qualifier from the row given by row_key.
-   *
-   * @param row_key the row from which to delete the cell
-   *
-   * @param column_qualifier the column from which to delete the cell.
-   *
-   * @param timestamp the std::chrono::milliseconds timestamp of the
-   *     cell to delete.
-   *
-   * @return Cell representing deleted cell, if there was a cell with
-   *     that timestamp in then given column in the given row,
-   *     otherwise absl::nullopt.
-   */
-  virtual absl::optional<Cell> DeleteTimeStamp(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp) = 0;
 
   virtual void RemoveAllDataFromColumnFamily() = 0;
 
   virtual std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
       std::shared_ptr<StringRangeSet const> row_set,
       std::string column_family_name) = 0;
-
-  virtual rocksdb::ColumnFamilyHandle* GetRaw() = 0;
 
   virtual bool RowKeyExists(std::string const& row_key) = 0;
 
@@ -427,7 +345,7 @@ class InMemoryColumnFamily : public ColumnFamily {
   // ColumnFamily that can support AddToCell or MergeToCell and
   // similar aggregate complex types. To construct an ordinary
   // ColumnFamily, use the default constructor ColumnFamily().
-  static StatusOr<std::shared_ptr<ColumnFamily>> ConstructAggregateColumnFamily(
+  static StatusOr<std::shared_ptr<InMemoryColumnFamily>> ConstructAggregateColumnFamily(
       google::bigtable::admin::v2::Type value_type);
 
   // Disable copying.
@@ -449,30 +367,86 @@ class InMemoryColumnFamily : public ColumnFamily {
     return rows_[row_key].ReadModifyWrite(column_qualifier, append_value);
   };
 
-  absl::optional<std::string> SetCell(std::string const& row_key,
-                                      std::string const& column_qualifier,
-                                      std::chrono::milliseconds timestamp,
-                                      std::string const& value) override;
+    /**
+   * Insert or update and existing cell at a given row, column and timestamp.
+   *
+   * @param row_key the row key at which to update the value.
+   * @param column_qualifier the column qualifier at which to update the value.
+   * @param timestamp the time stamp at which the value will be inserted or
+   *     updated.
+   * @param value the value to insert/update.
+   *
+   * @return no value if the timestamp had no value before, otherwise
+   *     the previous value of the timestamp.
+   *
+   */
+  absl::optional<std::string> SetCell(
+      std::string const& row_key, std::string const& column_qualifier,
+      std::chrono::milliseconds timestamp, std::string const& value);
 
+  /**
+   * UpdateCell is like SetCell except that, when a cell exists with
+   * the same timestamp, an update function (that depends on the column
+   * family type) is called to derive a new value from the new and
+   * existing value, and that is the value that is written.
+   *
+   * Simple (non-aggregate) column families have a default update
+   * function that just returns the new value.
+   *
+   */
   StatusOr<absl::optional<std::string>> UpdateCell(
       std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp, std::string& value) override;
+      std::chrono::milliseconds timestamp, std::string& value);
 
+  /**
+   * Delete the whole row from this column family.
+   *
+   * @param row_key the row key to remove.
+   * @return map from deleted column qualifiers to deleted cells.
+   */
   std::map<std::string, std::vector<Cell>> DeleteRow(
-      std::string const& row_key) override;
+      std::string const& row_key);
+  /**
+   * Delete cells from a row falling into a given timestamp range in one column.
+   *
+   * @param row_key the row key to remove the cells from (or the
+   *     iterator to the row - row_it - in the 2nd overloaded form of the
+   *     function).
 
+   * @param column_qualifier the column qualifier from which to delete
+   *     the values.
+   *
+   * @param time_range the timestamp range dictating which values to
+   *     delete.
+   * @return vector of deleted cells.
+   */
   std::vector<Cell> DeleteColumn(
       std::string const& row_key, std::string const& column_qualifier,
-      ::google::bigtable::v2::TimestampRange const& time_range) override;
+      ::google::bigtable::v2::TimestampRange const& time_range);
 
   std::vector<Cell> DeleteColumn(
       std::map<std::string, ColumnFamilyRow>::iterator row_it,
       std::string const& column_qualifier,
-      ::google::bigtable::v2::TimestampRange const& time_range) override;
+      ::google::bigtable::v2::TimestampRange const& time_range);
 
+  /**
+   * Delete a cell with the given timestamp from the column given by
+   *     the given column qualifier from the row given by row_key.
+   *
+   * @param row_key the row from which to delete the cell
+   *
+   * @param column_qualifier the column from which to delete the cell.
+   *
+   * @param timestamp the std::chrono::milliseconds timestamp of the
+   *     cell to delete.
+   *
+   * @return Cell representing deleted cell, if there was a cell with
+   *     that timestamp in then given column in the given row,
+   *     otherwise absl::nullopt.
+   */
   absl::optional<Cell> DeleteTimeStamp(
       std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp) override;
+      std::chrono::milliseconds timestamp);
 
   const_iterator begin() const { return rows_.begin(); }
   iterator begin() { return rows_.begin(); }
@@ -508,8 +482,6 @@ class InMemoryColumnFamily : public ColumnFamily {
       std::shared_ptr<StringRangeSet const> row_set,
       std::string column_family_name) override;
 
-  rocksdb::ColumnFamilyHandle* GetRaw() override { return nullptr; };
-
   bool RowKeyExists(std::string const& row_key) override {
     return this->find(row_key) != this->end();
   }
@@ -534,34 +506,9 @@ class PersistentColumnFamily : public ColumnFamily {
     value_type_ = std::move(other.value_type_);
   }
 
-  absl::optional<std::string> SetCell(std::string const& row_key,
-                                      std::string const& column_qualifier,
-                                      std::chrono::milliseconds timestamp,
-                                      std::string const& value) override;
-
-  StatusOr<absl::optional<std::string>> UpdateCell(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp, std::string& value) override;
-
-  std::map<std::string, std::vector<Cell>> DeleteRow(
-      std::string const& row_key) override;
-
-  std::vector<Cell> DeleteColumn(
-      std::string const& row_key, std::string const& column_qualifier,
-      ::google::bigtable::v2::TimestampRange const& time_range) override;
-
-  std::vector<Cell> DeleteColumn(
-      std::map<std::string, ColumnFamilyRow>::iterator row_it,
-      std::string const& column_qualifier,
-      ::google::bigtable::v2::TimestampRange const& time_range) override;
-
-  absl::optional<Cell> DeleteTimeStamp(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp) override;
-
   void RemoveAllDataFromColumnFamily() override { throw "UNIMPLEMENTED"; };
 
-  rocksdb::ColumnFamilyHandle* GetRaw() override { return handle_.get(); }
+  rocksdb::ColumnFamilyHandle* GetRaw() { return handle_.get(); }
 
   std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
       std::shared_ptr<StringRangeSet const> row_set,
