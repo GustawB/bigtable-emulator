@@ -184,34 +184,6 @@ StatusOr<CellStream> InMemoryTableUtilities::CreateCellStream(
   return table_stream_ctor();
 }
 
-Status InMemoryTableUtilities::Construct(
-    google::bigtable::admin::v2::Table const& schema) {
-  for (auto const& column_family_def : schema.column_families()) {
-    absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
-        absl::nullopt;
-
-    // Support for complex types (AddToCell aggregations, e.t.c.).
-    if (column_family_def.second.has_value_type()) {
-      opt_value_type = column_family_def.second.value_type();
-    }
-
-    if (opt_value_type.has_value()) {
-      auto cf = InMemoryColumnFamily::ConstructAggregateColumnFamily(
-          opt_value_type.value());
-      if (!cf) {
-        return cf.status();
-      }
-      auto gex = cf.value();
-      column_families_.emplace(column_family_def.first, gex);
-    } else {
-      column_families_.emplace(column_family_def.first,
-                               std::make_shared<InMemoryColumnFamily>());
-    }
-  }
-
-  return Status();
-}
-
 StatusOr<google::bigtable::admin::v2::Table>
 InMemoryTableUtilities::ModifyColumnFamilies(
     google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
@@ -358,6 +330,35 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
   res->db_.reset(raw_db);  // Assuming db_ is a smart pointer.
   res->table_name_ = schema.name();
 
+  for (auto const& cfd : schema.column_families()) {
+    absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
+        absl::nullopt;
+
+    if (cfd.second.has_value_type()) {
+      opt_value_type = cfd.second.value_type();
+    }
+
+    if (opt_value_type.has_value()) {
+      auto new_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
+          opt_value_type.value(), res->db_, res->table_name_);
+      if (!new_cf) {
+        return new_cf.status();
+      }
+      res->column_families_.emplace(cfd.first, new_cf.value());
+    } else {
+      // TODO: handle opts
+      rocksdb::ColumnFamilyOptions opts;
+      auto maybe_new_cf = PersistentColumnFamily::Create(res->db_, opts, cfd.first);
+      if (!maybe_new_cf.ok()) {
+        return InternalError(
+            "failed to create column family " + cfd.first +
+                "; Error status: " + maybe_new_cf.status().message(),
+            GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString()));
+      }
+      res->column_families_.emplace(cfd.first, maybe_new_cf.value());
+    }
+  }
+
   return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));
 }
 
@@ -450,40 +451,6 @@ Status PersistentTableUtilities::DropRowRange(std::string const& row_key_prefix)
   return Status();
 }
 
-Status PersistentTableUtilities::Construct(
-    google::bigtable::admin::v2::Table const& schema) {
-  for (auto const& cfd : schema.column_families()) {
-    absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
-        absl::nullopt;
-
-    if (cfd.second.has_value_type()) {
-      opt_value_type = cfd.second.value_type();
-    }
-
-    if (opt_value_type.has_value()) {
-      auto new_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
-          opt_value_type.value(), db_, table_name_);
-      if (!new_cf) {
-        return new_cf.status();
-      }
-      column_families_.emplace(cfd.first, new_cf.value());
-    } else {
-      // TODO: handle opts
-      rocksdb::ColumnFamilyOptions opts;
-      auto maybe_new_cf = PersistentColumnFamily::Create(db_, opts, cfd.first);
-      if (!maybe_new_cf.ok()) {
-        return InternalError(
-            "failed to create column family " + cfd.first +
-                "; Error status: " + maybe_new_cf.status().message(),
-            GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString()));
-      }
-      column_families_.emplace(cfd.first, maybe_new_cf.value());
-    }
-  }
-
-  return Status();
-}
-
 StatusOr<google::bigtable::admin::v2::Table>
 PersistentTableUtilities::ModifyColumnFamilies(
     google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
@@ -522,10 +489,7 @@ PersistentTableUtilities::ModifyColumnFamilies(
                               "modification", modification.DebugString())));
       }
 
-      auto cf_obj = it->second;
-
-      auto persistent_cf =
-          std::static_pointer_cast<PersistentColumnFamily>(cf_obj);
+      auto persistent_cf = it->second;
 
       std::shared_ptr<rocksdb::ColumnFamilyHandle> old_handle =
           persistent_cf->GetHandle();
@@ -858,7 +822,6 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema,
     return maybe_utilities.status();
   }
   utilities_ = maybe_utilities.value();
-  utilities_->Construct(schema);
   return Status();
 }
 
@@ -951,7 +914,6 @@ Status Table::DoMutationsWithPossibleRollback(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()));
       }
-
       auto status = row_transaction->SetCell(set_cell, timestamp_override);
       if (!status.ok()) {
         return status;
@@ -1276,9 +1238,9 @@ Status Table::DropRowRange(
 
   if (request.has_delete_all_data_from_table()) {
     Status status = utilities_->RemoveAllDataFromColumnFamilies();
-    if (!status.ok()) {
+    /*if (!status.ok()) {
       return status;
-    }
+    }*/
     return Status();
   }
 
@@ -1298,9 +1260,9 @@ Status Table::DropRowRange(
   }
 
   Status status = utilities_->DropRowRange(row_key_prefix);
-  if (!status.ok()) {
+  /*if (!status.ok()) {
     return status;
-  }
+  }*/
   return Status();
 }
 
@@ -1796,11 +1758,7 @@ InMemoryRowTransaction::ReadModifyWriteRow(
       return maybe_column_family.status();
     }
 
-    // For now, let's keep this. Not sure how this will look for the Persistent
-    // CF yet (RocksDB has Merge operators), so I don't think it makes sense to
-    // make ReadModifyWrite A part of the ColumnFamily API.
-    auto column_family = std::static_pointer_cast<InMemoryColumnFamily>(
-        maybe_column_family.value());
+    auto column_family = maybe_column_family.value();
 
     if (rule.has_append_value()) {
       auto result = column_family->ReadModifyWrite(

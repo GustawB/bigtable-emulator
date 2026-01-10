@@ -88,9 +88,6 @@ class TableUtilities {
 
   virtual Status DropRowRange(std::string const& row_key_prefix) = 0;
 
-  virtual Status Construct(
-      google::bigtable::admin::v2::Table const& schema) = 0;
-
   virtual StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) = 0;
@@ -142,8 +139,6 @@ class InMemoryTableUtilities
       return Status();
   }
 
-  Status Construct(google::bigtable::admin::v2::Table const& schema) override;
-
   StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) override;
@@ -189,8 +184,6 @@ class PersistentTableUtilities
   Status RemoveAllDataFromColumnFamilies() override;
 
   Status DropRowRange(std::string const& row_key_prefix) override;
-
-  Status Construct(google::bigtable::admin::v2::Table const& schema) override;
 
   StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
@@ -332,9 +325,9 @@ class RowTransaction {
 
 class InMemoryRowTransaction : public RowTransaction {
  public:
-  explicit InMemoryRowTransaction(std::shared_ptr<TableUtilities> utilities,
+  explicit InMemoryRowTransaction(std::shared_ptr<InMemoryTableUtilities> utilities,
                                   std::string const& row_key)
-      : RowTransaction(row_key) {}
+      : RowTransaction(row_key), utilities_(std::move(utilities)) {}
 
   ~InMemoryRowTransaction() override {
     if (!committed_) {
@@ -378,10 +371,10 @@ class InMemoryRowTransaction : public RowTransaction {
 
 class PersistentRowTransaction : public RowTransaction {
  public:
-  explicit PersistentRowTransaction(std::shared_ptr<TableUtilities> utilities,
+  explicit PersistentRowTransaction(std::shared_ptr<PersistentTableUtilities> utilities,
                                     std::string const& row_key,
                                     rocksdb::TransactionDB* db)
-      : RowTransaction(row_key) {
+      : RowTransaction(row_key), utilities_(std::move(utilities)) {
     txn_ = std::unique_ptr<rocksdb::Transaction>(
         db->BeginTransaction(rocksdb::WriteOptions()));
   }
