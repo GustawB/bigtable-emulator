@@ -16,6 +16,7 @@
 #define GOOGLE_CLOUD_CPP_GOOGLE_CLOUD_BIGTABLE_EMULATOR_COLUMN_FAMILY_H
 
 #include "google/cloud/internal/big_endian.h"
+#include "google/cloud/status.h"
 #include "google/cloud/status_or.h"
 #include "cell_view.h"
 #include "filter.h"
@@ -528,6 +529,11 @@ class PersistentColumnFamily : public ColumnFamily {
       std::shared_ptr<rocksdb::DB> db, rocksdb::ColumnFamilyOptions opts,
       std::string const& name);
 
+  static StatusOr<std::shared_ptr<PersistentColumnFamily>> OpenExisting(
+      std::shared_ptr<rocksdb::DB> db,
+      std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
+      absl::optional<google::bigtable::admin::v2::Type> value_type);
+
   PersistentColumnFamily(PersistentColumnFamily&& other) noexcept {
     db_ = std::move(other.db_);
     handle_ = std::move(other.handle_);
@@ -600,6 +606,8 @@ class PersistentColumnFamily : public ColumnFamily {
   // Owning  table
   std::shared_ptr<rocksdb::DB> db_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
+  google::cloud::Status ConfigureFromValueType(
+      absl::optional<google::bigtable::admin::v2::Type> const& value_type);
 };
 
 /**
