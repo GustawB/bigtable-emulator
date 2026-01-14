@@ -61,7 +61,8 @@ namespace btadmin = ::google::bigtable::admin::v2;
 constexpr char kSchemaKey[] = "t_emulator:meta:schema_pb";
 
 static std::shared_ptr<rocksdb::ColumnFamilyHandle> AdoptHandle(
-    std::shared_ptr<rocksdb::DB> db, rocksdb::ColumnFamilyHandle* raw) {
+    std::shared_ptr<rocksdb::TransactionDB> db,
+    rocksdb::ColumnFamilyHandle* raw) {
   return std::shared_ptr<rocksdb::ColumnFamilyHandle>(
       raw, [db = std::move(db)](rocksdb::ColumnFamilyHandle* h) {
         if (!h) return;
@@ -313,12 +314,19 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
       rocksdb::DB::ListColumnFamilies(options, db_path.string(), &cf_names);
 
   if (!list_s.ok()) {
-    if (!allow_bootstrap_schema) {
-      return NotFoundError(
-          "No such table; " + list_s.ToString(),
-          GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
+    if (allow_bootstrap_schema && list_s.IsNotFound()) {
+      cf_names = {rocksdb::kDefaultColumnFamilyName};
+    } else {
+      auto msg = "Failed to list column families for table at " +
+                 db_path.string() + "; " + list_s.ToString();
+      if (!allow_bootstrap_schema) {
+        return NotFoundError(
+            "No such table; " + list_s.ToString(),
+            GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
+      }
+      return InternalError(
+          msg, GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
     }
-    cf_names = {rocksdb::kDefaultColumnFamilyName};
   }
 
   std::vector<rocksdb::ColumnFamilyDescriptor> descs;
@@ -347,10 +355,9 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
   res->db_.reset(raw_db);  // Assuming db_ is a smart pointer.
   res->table_name_ = schema.name();
 
-  auto db_as_db = std::static_pointer_cast<rocksdb::DB>(res->db_);
   for (std::size_t i = 0; i < descs.size(); ++i) {
     res->handles_by_name_[descs[i].name] =
-        AdoptHandle(db_as_db, raw_handles[i]);
+        AdoptHandle(res->db_, raw_handles[i]);
   }
 
   return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));

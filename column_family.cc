@@ -316,7 +316,7 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
                                rocksdb::ColumnFamilyOptions opts,
                                std::string const& name) {
   PersistentColumnFamily pcf;
-  pcf.db_ = db;
+  pcf.db_ = std::move(db);
 
   rocksdb::ColumnFamilyHandle* raw = nullptr;
   auto status = pcf.db_->CreateColumnFamily(opts, name, &raw);
