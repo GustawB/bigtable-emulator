@@ -72,11 +72,10 @@ class TableUtilities {
   virtual ~TableUtilities() = default;
 
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
-      google::bigtable::admin::v2::Table const& schema, bool should_persist,
-      std::string const& data_root);
+      google::bigtable::admin::v2::Table& schema, bool should_persist,
+      std::string const& data_root, bool allow_bootstrap_schema);
 
-  virtual std::unique_ptr<RowTransaction> NewRowTransaction(
-      std::shared_ptr<Table> table, std::string const& row_key) = 0;
+  virtual std::unique_ptr<RowTransaction> NewRowTransaction(std::string const& row_key) = 0;
 
   virtual StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
@@ -91,6 +90,10 @@ class TableUtilities {
   virtual StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) = 0;
+
+    virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) {
+        return Status();
+    }
 };
 
 class InMemoryTableUtilities
@@ -100,8 +103,7 @@ class InMemoryTableUtilities
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
       google::bigtable::admin::v2::Table const& schema);
 
-  std::unique_ptr<RowTransaction> NewRowTransaction(
-      std::shared_ptr<Table> table, std::string const& row_key) override;
+  std::unique_ptr<RowTransaction> NewRowTransaction(std::string const& row_key) override;
 
   StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
@@ -170,10 +172,10 @@ class PersistentTableUtilities
  public:
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
       std::string const& data_root,
-      google::bigtable::admin::v2::Table const& schema);
+      google::bigtable::admin::v2::Table& schema,
+      bool allow_bootstrap_schema);
 
-  std::unique_ptr<RowTransaction> NewRowTransaction(
-      std::shared_ptr<Table> table, std::string const& row_key) override;
+  std::unique_ptr<RowTransaction> NewRowTransaction(std::string const& row_key) override;
 
   StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
@@ -188,6 +190,11 @@ class PersistentTableUtilities
   StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) override;
+
+  Status PersistSchema(
+      google::bigtable::admin::v2::Table const& schema) override;
+
+  StatusOr<google::bigtable::admin::v2::Table> LoadSchema() const;
 
   std::shared_ptr<PersistentTableUtilities> get() { return shared_from_this(); }
 
@@ -214,7 +221,11 @@ class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       google::bigtable::admin::v2::Table schema, bool should_persist,
-      std::string const& data_root = "/root/");
+      std::string const& data_root = "/root/",
+      bool allow_bootstrap_schema = true);
+
+  static StatusOr<std::shared_ptr<Table>> Load(
+      std::string const& table_name, std::string const& data_root = "/root/");
 
   std::shared_ptr<Table> get() { return shared_from_this(); }
 
@@ -251,7 +262,7 @@ class Table : public std::enable_shared_from_this<Table> {
 
   Status SampleRowKeys(
       double pass_probability,
-      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer);
+      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) const;
 
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request);
@@ -272,7 +283,8 @@ class Table : public std::enable_shared_from_this<Table> {
   google::bigtable::admin::v2::Table schema_;
 
   Status Construct(google::bigtable::admin::v2::Table schema,
-                   bool should_persist, std::string const& data_root);
+                   bool should_persist, std::string const& data_root,
+                   bool allow_bootstrap_schema);
 
   bool IsDeleteProtectedNoLock() const;
 

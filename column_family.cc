@@ -325,23 +325,18 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
                          GCP_ERROR_INFO().WithMetadata("cf name", name));
   }
 
-  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(raw);
+  auto db_keepalive = pcf.db_;
+  pcf.handle_ = std::shared_ptr<rocksdb::ColumnFamilyHandle>(
+      raw, [db_keepalive](rocksdb::ColumnFamilyHandle* h) {
+        if (!h) return;
+        (void)db_keepalive->DestroyColumnFamilyHandle(h);
+      });
   return std::make_shared<PersistentColumnFamily>(std::move(pcf));
 }
 
 PersistentColumnFamily::~PersistentColumnFamily() {
-  // TODO; think how to exactly do this
-  // This will mark a column family as deleted, but won't actually delete its
-  // data, so if, somehow, there is another shared_ptr using it, it will be safe
-  // to use it. Explicit delete call, needed to remove the column family, is
-  // left for the shared_ptr destructor.
-  if (db_) {
-    rocksdb::Status res = db_->DropColumnFamily(handle_.get());
-    if (!res.ok()) {
-      std::cerr << "Failed to drop column family: " << res.ToString()
-                << std::endl;
-    }
-  }
+  // We only want to drop column family in ModifyColumnFamilies / DropTable /
+  // rollback
 }
 
 std::unique_ptr<AbstractCellStreamImpl>
@@ -622,6 +617,49 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
       GCP_ERROR_INFO().WithMetadata("supplied value type",
                                     value_type.DebugString()));
 }
+
+google::cloud::Status PersistentColumnFamily::ConfigureFromValueType(
+    absl::optional<google::bigtable::admin::v2::Type> const& value_type) {
+  value_type_ = value_type;
+  update_cell_ = DefaultUpdateCell;
+
+  if (!value_type.has_value()) return google::cloud::Status();
+  if (!value_type->has_aggregate_type()) return google::cloud::Status();
+
+  auto const& aggregate = value_type->aggregate_type();
+  switch (aggregate.aggregator_case()) {
+    case google::bigtable::admin::v2::Type::Aggregate::kSum:
+      update_cell_ = SumUpdateCellBEInt64;
+      return google::cloud::Status();
+    case google::bigtable::admin::v2::Type::Aggregate::kMin:
+      update_cell_ = MinUpdateCellBEInt64;
+      return google::cloud::Status();
+    case google::bigtable::admin::v2::Type::Aggregate::kMax:
+      update_cell_ = MaxUpdateCellBEInt64;
+      return google::cloud::Status();
+    default:
+      return InvalidArgumentError(
+          "unsupported aggregation type",
+          GCP_ERROR_INFO().WithMetadata(
+              "aggregation_case",
+              absl::StrFormat("%d", aggregate.aggregator_case())));
+  }
+}
+
+StatusOr<std::shared_ptr<PersistentColumnFamily>>
+PersistentColumnFamily::OpenExisting(
+    std::shared_ptr<rocksdb::DB> db,
+    std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
+    absl::optional<google::bigtable::admin::v2::Type> value_type) {
+  auto cf = std::make_shared<PersistentColumnFamily>();
+  cf->db_ = std::move(db);
+  cf->handle_ = std::move(handle);
+
+  auto st = cf->ConfigureFromValueType(value_type);
+  if (!st.ok()) return st;
+  return cf;
+}
+
 }  // namespace emulator
 }  // namespace bigtable
 }  // namespace cloud

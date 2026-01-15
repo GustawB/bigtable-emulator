@@ -77,7 +77,7 @@ class Cluster {
    */
   StatusOr<google::bigtable::admin::v2::Table> GetTable(
       std::string const& table_name,
-      google::bigtable::admin::v2::Table_View view) const;
+      google::bigtable::admin::v2::Table_View view);
 
   /**
    * Delete a table by its name.
@@ -121,6 +121,7 @@ class Cluster {
   std::map<std::string, std::shared_ptr<Table>> table_by_name_;
 
   bool should_persist_;
+  std::string data_root_ = "/root/";
 };
 
 }  // namespace emulator

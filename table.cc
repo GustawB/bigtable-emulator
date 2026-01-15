@@ -114,18 +114,85 @@ namespace emulator {
 
       return Status();
     }
+
+    // ProcessReadModifyWriteRuleResult records the result of a
+    // ReadModifyWriteRule computation for possible undo in the undo log
+    // and also updates the tmp_families temporary table (containing only
+    // one row) with the modified cell for later return.
+    void ProcessReadModifyWriteResult(
+        std::shared_ptr<InMemoryColumnFamily>& column_family,
+        std::string const& row_key,
+        std::stack<absl::variant<DeleteValue, RestoreValue>>& undo,
+        google::bigtable::v2::ReadModifyWriteRule const& rule,
+        ReadModifyWriteCellResult& result,
+        std::map<std::string, InMemoryColumnFamily>& tmp_families) {
+      if (result.maybe_old_value.has_value()) {
+        // We overwrote a cell, we need to record a RestoreValue in the undo log
+        RestoreValue restore_value{*column_family, rule.column_qualifier(),
+                                   result.timestamp,
+                                   std::move(result.maybe_old_value.value())};
+        undo.emplace(std::move(restore_value));
+      } else {
+        // We created a new cell -- we would need to delete it in any rollback
+        DeleteValue delete_value{*column_family, rule.column_qualifier(),
+                                 result.timestamp};
+        undo.emplace(std::move(delete_value));
+      }
+
+      // Record the cell in our local mini table here to use in
+      // assembling a row of changed cells for return.
+      tmp_families[rule.family_name()].SetCell(row_key, rule.column_qualifier(),
+                                               result.timestamp,
+                                               std::move(result.value));
+    }
+
+    StatusOr<StringRangeSet> CreateStringRangeSet(
+        google::bigtable::v2::RowSet const& row_set) {
+      StringRangeSet res;
+      for (auto const& row_key : row_set.row_keys()) {
+        if (row_key.size() > kMaxRowLen) {
+          return InvalidArgumentError(
+              "The row_key in row_set is longer than 4KiB",
+              GCP_ERROR_INFO()
+                  .WithMetadata("row_key size",
+                                absl::StrFormat("%zu", row_key.size()))
+                  .WithMetadata("row_set", row_set.DebugString()));
+        }
+
+        if (row_key.empty()) {
+          return InvalidArgumentError(
+              "`row_key` empty",
+              GCP_ERROR_INFO().WithMetadata("row_set", row_set.DebugString()));
+        }
+        res.Sum(StringRangeSet::Range(row_key, false, row_key, false));
+      }
+      for (auto const& row_range : row_set.row_ranges()) {
+        auto maybe_range = StringRangeSet::Range::FromRowRange(row_range);
+        if (!maybe_range) {
+          return maybe_range.status();
+        }
+        if (maybe_range->IsEmpty()) {
+          continue;
+        }
+        res.Sum(*std::move(maybe_range));
+      }
+      return res;
+    }
+
+    constexpr char kSchemaKey[] = "t_emulator:meta:schema_pb";
   } // anonymous namespace
 
 namespace btadmin = ::google::bigtable::admin::v2;
 
 StatusOr<std::shared_ptr<TableUtilities>> TableUtilities::Create(
-    google::bigtable::admin::v2::Table const& schema, bool should_persist,
-    std::string const& data_root) {
+    google::bigtable::admin::v2::Table& schema, bool should_persist,
+    std::string const& data_root, bool allow_bootstrap_schema) {
   StatusOr<std::shared_ptr<TableUtilities>> maybe_utilities;
   if (!should_persist) {
     maybe_utilities = InMemoryTableUtilities::Create(schema);
   } else {
-    maybe_utilities = PersistentTableUtilities::Create(data_root, schema);
+    maybe_utilities = PersistentTableUtilities::Create(data_root, schema,
+                                                       allow_bootstrap_schema);
   }
   return maybe_utilities;
 }
@@ -157,8 +224,7 @@ StatusOr<std::shared_ptr<TableUtilities>> InMemoryTableUtilities::Create(
   return std::shared_ptr<TableUtilities>(res);
 }
 
-std::unique_ptr<RowTransaction> InMemoryTableUtilities::NewRowTransaction(
-    std::shared_ptr<Table> table, std::string const& row_key) {
+std::unique_ptr<RowTransaction> InMemoryTableUtilities::NewRowTransaction(std::string const& row_key) {
   return std::make_unique<InMemoryRowTransaction>(this->get(), row_key);
 }
 
@@ -294,9 +360,11 @@ InMemoryTableUtilities::ModifyColumnFamilies(
 
 StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
     std::string const& data_root,
-    google::bigtable::admin::v2::Table const& schema) {
-  std::filesystem::path db_path =
-      std::filesystem::path(data_root) / schema.name();
+    google::bigtable::admin::v2::Table& schema,
+    bool allow_bootstrap_schema) {
+  std::string rel = schema.name();
+  if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
+  std::filesystem::path db_path = std::filesystem::path(data_root) / rel;
   std::filesystem::path parent_path = db_path.parent_path();
 
   std::error_code ec;
@@ -312,23 +380,67 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
   rocksdb::TransactionDBOptions txn_options;
   txn_options.lock_mgr_handle.reset(rocksdb::NewRangeLockManager(nullptr));
 
-  rocksdb::TransactionDB* raw_db = nullptr;
-
-  options.create_if_missing = true;
+  options.create_if_missing = allow_bootstrap_schema;
   options.create_missing_column_families = false;
 
-  rocksdb::Status status = rocksdb::TransactionDB::Open(
-      options, txn_options, db_path.string(), &raw_db);
+  std::vector<std::string> cf_names;
+  rocksdb::Status list_s =
+      rocksdb::DB::ListColumnFamilies(options, db_path.string(), &cf_names);
 
+  if (!list_s.ok()) {
+    if (list_s.IsNotFound()) {
+      std::cout << "YYYYYYYYYYYYYYYYYYYYYYYYYYYYY\n";
+    }
+    if (allow_bootstrap_schema && list_s.IsNotFound()) {
+      cf_names = {rocksdb::kDefaultColumnFamilyName};
+    } else {
+      auto msg = "Failed to list column families for table at " +
+                 db_path.string() + "; " + list_s.ToString();
+      if (!allow_bootstrap_schema) {
+        return NotFoundError(
+            "No such table; " + list_s.ToString(),
+            GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
+      }
+      return InternalError(
+          msg, GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
+    }
+  }
+
+  std::vector<rocksdb::ColumnFamilyDescriptor> descs;
+  descs.reserve(cf_names.size());
+  for (auto const& n : cf_names) {
+    descs.emplace_back(n, rocksdb::ColumnFamilyOptions());
+  }
+
+  rocksdb::TransactionDB* raw_db = nullptr;
+  std::vector<rocksdb::ColumnFamilyHandle*> raw_handles;
+  rocksdb::Status status = rocksdb::TransactionDB::Open(
+      options, txn_options, db_path.string(), descs, &raw_handles, &raw_db);
   if (!status.ok()) {
+    if (!allow_bootstrap_schema) {
+      return NotFoundError(
+          "No such table; " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
+    }
     return InternalError(
         "failed to create new rocksdb instance; " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
   }
 
   std::shared_ptr<PersistentTableUtilities> res(new PersistentTableUtilities);
-  res->db_.reset(raw_db);  // Assuming db_ is a smart pointer.
+  res->db_.reset(raw_db);
   res->table_name_ = schema.name();
+
+  auto maybe_schema = res->LoadSchema();
+  if (maybe_schema.ok()) {
+    schema = std::move(maybe_schema.value());
+  } else if (maybe_schema.status().code() == StatusCode::kNotFound) {
+    if (!allow_bootstrap_schema) return maybe_schema.status();
+    auto st = res->PersistSchema(schema);
+    if (!st.ok()) return st;
+  } else {
+    return maybe_schema.status();
+  }
 
   for (auto const& cfd : schema.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
@@ -362,8 +474,7 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
   return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));
 }
 
-std::unique_ptr<RowTransaction> PersistentTableUtilities::NewRowTransaction(
-    std::shared_ptr<Table> table, std::string const& row_key) {
+std::unique_ptr<RowTransaction> PersistentTableUtilities::NewRowTransaction(std::string const& row_key) {
   return std::make_unique<PersistentRowTransaction>(this->get(), row_key,
                                                     db_.get());
 }
@@ -457,7 +568,7 @@ PersistentTableUtilities::ModifyColumnFamilies(
     google::bigtable::admin::v2::Table schema) {
   auto new_handles = column_families_;
 
-  ModifyCfRollback rollback(db_);
+  ModifyCfRollback rollback(std::static_pointer_cast<rocksdb::DB>(db_));
 
   auto rollback_and_return =
       [&](Status const& original) -> StatusOr<btadmin::Table> {
@@ -633,11 +744,60 @@ PersistentTableUtilities::ModifyColumnFamilies(
   return schema;
 }
 
+Status PersistentTableUtilities::PersistSchema(
+    google::bigtable::admin::v2::Table const& schema) {
+  std::string bytes;
+  if (!schema.SerializeToString(&bytes)) {
+    return InternalError(
+        "Failed to serialize table schema",
+        GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString()));
+  }
+
+  rocksdb::WriteOptions wopts;
+  auto* default_cf = db_->DefaultColumnFamily();
+
+  rocksdb::Status s = db_->Put(wopts, default_cf, kSchemaKey, bytes);
+  if (!s.ok()) {
+    return InternalError("Failed to persist schema in RocksDB: " + s.ToString(),
+                         GCP_ERROR_INFO()
+                             .WithMetadata("table", table_name_)
+                             .WithMetadata("key", kSchemaKey));
+  }
+  return Status();
+}
+
+StatusOr<google::bigtable::admin::v2::Table>
+PersistentTableUtilities::LoadSchema() const {
+  std::string serialized;
+
+  rocksdb::ReadOptions ro;
+  rocksdb::Status s =
+      db_->Get(ro, db_->DefaultColumnFamily(), kSchemaKey, &serialized);
+
+  if (s.IsNotFound()) {
+    return NotFoundError("Persisted schema not found in default CF.",
+                         GCP_ERROR_INFO().WithMetadata("key", kSchemaKey));
+  }
+  if (!s.ok()) {
+    return InternalError("Failed to read persisted schema: " + s.ToString(),
+                         GCP_ERROR_INFO().WithMetadata("key", kSchemaKey));
+  }
+
+  google::bigtable::admin::v2::Table schema;
+  if (!schema.ParseFromString(serialized)) {
+    return InternalError("Failed to parse persisted schema proto.",
+                         GCP_ERROR_INFO().WithMetadata("key", kSchemaKey));
+  }
+
+  return schema;
+}
+
 StatusOr<std::shared_ptr<Table>> Table::Create(
     google::bigtable::admin::v2::Table schema, bool should_persist,
-    std::string const& data_root) {
+    std::string const& data_root, bool allow_bootstrap_schema) {
   std::shared_ptr<Table> res(new Table);
-  auto status = res->Construct(std::move(schema), should_persist, data_root);
+  auto status = res->Construct(std::move(schema), should_persist, data_root,
+                               allow_bootstrap_schema);
   if (!status.ok()) {
     return status;
   }
@@ -680,7 +840,7 @@ Status Table::PrepareSchema() {
 
 Status Table::SampleRowKeys(
     double pass_probability,
-    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) {
+    grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) const {
   if (pass_probability <= 0.0) {
     return InvalidArgumentError(
         "The sampling probabality must be positive",
@@ -807,21 +967,19 @@ Status Table::SampleRowKeys(
 }
 
 Status Table::Construct(google::bigtable::admin::v2::Table schema,
-                        bool should_persist, std::string const& data_root) {
-  // Normally the constructor acts as a synchronization point. We don't have
-  // that luxury here, so we need to make sure that the changes performed in
-  // this member function are reflected in other threads. The simplest way to do
-  // this is the mutex.
+                        bool should_persist, std::string const& data_root,
+                        bool allow_bootstrap_schema) {
   std::lock_guard<std::mutex> lock(mu_);
   schema_ = std::move(schema);
+
   Status parse_result = PrepareSchema();
   if (!parse_result.ok()) return parse_result;
-  auto maybe_utilities =
-      TableUtilities::Create(schema_, should_persist, data_root);
-  if (!maybe_utilities.ok()) {
-    return maybe_utilities.status();
-  }
+
+  auto maybe_utilities = TableUtilities::Create(
+      schema_, should_persist, data_root, allow_bootstrap_schema);
+  if (!maybe_utilities.ok()) return maybe_utilities.status();
   utilities_ = maybe_utilities.value();
+
   return Status();
 }
 
@@ -838,6 +996,9 @@ StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
   auto new_schema = maybe_new_schema.value();
 
   schema_ = new_schema;
+  auto s = utilities_->PersistSchema(schema_);
+  if (!s.ok()) return s;
+
   lock.unlock();
   return new_schema;
 }
@@ -848,6 +1009,7 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
   std::cout << "Update schema: " << new_schema.DebugString()
             << " mask: " << to_update.DebugString() << std::endl;
   using google::protobuf::util::FieldMaskUtil;
+
   google::protobuf::FieldMask allowed_mask;
   FieldMaskUtil::FromString(
       "change_stream_config,"
@@ -860,6 +1022,7 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
         "Update mask is invalid.",
         GCP_ERROR_INFO().WithMetadata("mask", to_update.DebugString()));
   }
+
   google::protobuf::FieldMask disallowed_mask;
   FieldMaskUtil::Subtract<google::bigtable::admin::v2::Table>(
       to_update, allowed_mask, &disallowed_mask);
@@ -868,9 +1031,13 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
         "Update mask contains disallowed fields.",
         GCP_ERROR_INFO().WithMetadata("mask", disallowed_mask.DebugString()));
   }
+
   std::lock_guard<std::mutex> lock(mu_);
   FieldMaskUtil::MergeMessageTo(new_schema, to_update,
                                 FieldMaskUtil::MergeOptions(), &schema_);
+  auto s = utilities_->PersistSchema(schema_);
+  if (!s.ok()) return s;
+
   return Status();
 }
 
@@ -881,7 +1048,14 @@ Status Table::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
                                          request.mutations());
 }
 
-// NOLINTBEGIN(readability-function-cognitive-complexity)
+StatusOr<std::shared_ptr<Table>> Table::Load(std::string const& table_name,
+                                             std::string const& data_root) {
+  google::bigtable::admin::v2::Table placeholder;
+  placeholder.set_name(table_name);
+
+  return Table::Create(std::move(placeholder), true, data_root, false);
+}
+
 Status Table::DoMutationsWithPossibleRollback(
     std::string const& row_key,
     google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
@@ -894,7 +1068,7 @@ Status Table::DoMutationsWithPossibleRollback(
   }
 
   std::unique_ptr<RowTransaction> row_transaction =
-      utilities_->NewRowTransaction(this->get(), row_key);
+      utilities_->NewRowTransaction(row_key);
 
   for (auto const& mutation : mutations) {
     if (mutation.has_set_cell()) {
@@ -1036,39 +1210,6 @@ std::vector<CellStream> FilteredPersistentTableStream::CreateCellStreams(
   res.reserve(cf_streams.size());
   for (auto& stream : cf_streams) {
     res.emplace_back(std::move(stream));
-  }
-  return res;
-}
-
-StatusOr<StringRangeSet> CreateStringRangeSet(
-    google::bigtable::v2::RowSet const& row_set) {
-  StringRangeSet res;
-  for (auto const& row_key : row_set.row_keys()) {
-    if (row_key.size() > kMaxRowLen) {
-      return InvalidArgumentError(
-          "The row_key in row_set is longer than 4KiB",
-          GCP_ERROR_INFO()
-              .WithMetadata("row_key size",
-                            absl::StrFormat("%zu", row_key.size()))
-              .WithMetadata("row_set", row_set.DebugString()));
-    }
-
-    if (row_key.empty()) {
-      return InvalidArgumentError(
-          "`row_key` empty",
-          GCP_ERROR_INFO().WithMetadata("row_set", row_set.DebugString()));
-    }
-    res.Sum(StringRangeSet::Range(row_key, false, row_key, false));
-  }
-  for (auto const& row_range : row_set.row_ranges()) {
-    auto maybe_range = StringRangeSet::Range::FromRowRange(row_range);
-    if (!maybe_range) {
-      return maybe_range.status();
-    }
-    if (maybe_range->IsEmpty()) {
-      continue;
-    }
-    res.Sum(*std::move(maybe_range));
   }
   return res;
 }
@@ -1279,7 +1420,7 @@ Table::ReadModifyWriteRow(
   std::lock_guard<std::mutex> lock(mu_);
 
   std::unique_ptr<RowTransaction> row_transaction =
-      utilities_->NewRowTransaction(this->get(), request.row_key());
+      utilities_->NewRowTransaction(request.row_key());
 
   auto maybe_response = row_transaction->ReadModifyWriteRow(request);
   if (!maybe_response) {
@@ -1300,7 +1441,7 @@ Status InMemoryRowTransaction::AddToCell(
     return status.status();
   }
 
-  auto cf = status.value();
+  const auto& cf = status.value();
   auto cf_value_type = cf->GetValueType();
 
   auto validation_res = ValidateAddToCellTransaction(add_to_cell, cf_value_type);
@@ -1379,7 +1520,7 @@ Status InMemoryRowTransaction::DeleteFromColumn(
     }
   }
 
-  auto column_family = maybe_column_family.value();
+  const auto& column_family = maybe_column_family.value();
 
   auto deleted_cells = column_family->DeleteColumn(
       row_key_, delete_from_column.column_qualifier(),
@@ -1397,13 +1538,12 @@ Status InMemoryRowTransaction::DeleteFromColumn(
 
 Status InMemoryRowTransaction::DeleteFromRow() {
   bool row_existed = false;
-  for (auto column_family = utilities_->begin();
-       column_family != utilities_->end(); ++column_family) {
-    auto deleted_columns = column_family->second->DeleteRow(row_key_);
+  for (auto & column_family : *utilities_) {
+    auto deleted_columns = column_family.second->DeleteRow(row_key_);
 
     for (auto& column : deleted_columns) {
       for (auto& cell : column.second) {
-        RestoreValue restore_value = {*column_family->second,
+        RestoreValue restore_value = {*column_family.second,
                                       std::move(column.first), cell.timestamp,
                                       std::move(cell.value)};
         undo_.emplace(std::move(restore_value));
@@ -1472,7 +1612,7 @@ Status InMemoryRowTransaction::SetCell(
     return maybe_column_family.status();
   }
 
-  auto column_family = maybe_column_family.value();
+  const auto& column_family = maybe_column_family.value();
 
   auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::microseconds(set_cell.timestamp_micros()));
@@ -1517,7 +1657,7 @@ Status PersistentRowTransaction::SetCell(
     return maybe_column_family.status();
   }
 
-  auto column_family = maybe_column_family.value();
+  const auto& column_family = maybe_column_family.value();
 
   auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::microseconds(set_cell.timestamp_micros()));
@@ -1544,7 +1684,6 @@ Status PersistentRowTransaction::SetCell(
   return Status();
 }
 
-  // NOLINTBEGIN(readability-convert-member-functions-to-static)
 Status PersistentRowTransaction::AddToCell(
     ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
     absl::optional<std::chrono::milliseconds> timestamp_override) {
@@ -1553,7 +1692,7 @@ Status PersistentRowTransaction::AddToCell(
     return find_status.status();
   }
 
-  auto cf = find_status.value();
+  const auto& cf = find_status.value();
   auto cf_value_type = cf->GetValueType();
 
   auto validation_res = ValidateAddToCellTransaction(add_to_cell, cf_value_type);
@@ -1652,37 +1791,6 @@ StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
 PersistentRowTransaction::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
   return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
-}
-
-// ProcessReadModifyWriteRuleResult records the result of a
-// ReadModifyWriteRule computation for possible undo in the undo log
-// and also updates the tmp_families temporary table (containing only
-// one row) with the modified cell for later return.
-void ProcessReadModifyWriteResult(
-    std::shared_ptr<InMemoryColumnFamily>& column_family,
-    std::string const& row_key,
-    std::stack<absl::variant<DeleteValue, RestoreValue>>& undo,
-    google::bigtable::v2::ReadModifyWriteRule const& rule,
-    ReadModifyWriteCellResult& result,
-    std::map<std::string, InMemoryColumnFamily>& tmp_families) {
-  if (result.maybe_old_value.has_value()) {
-    // We overwrote a cell, we need to record a RestoreValue in the undo log
-    RestoreValue restore_value{*column_family, rule.column_qualifier(),
-                               result.timestamp,
-                               std::move(result.maybe_old_value.value())};
-    undo.emplace(std::move(restore_value));
-  } else {
-    // We created a new cell -- we would need to delete it in any rollback
-    DeleteValue delete_value{*column_family, rule.column_qualifier(),
-                             result.timestamp};
-    undo.emplace(std::move(delete_value));
-  }
-
-  // Record the cell in our local mini table here to use in
-  // assembling a row of changed cells for return.
-  tmp_families[rule.family_name()].SetCell(row_key, rule.column_qualifier(),
-                                           result.timestamp,
-                                           std::move(result.value));
 }
 
 google::bigtable::v2::ReadModifyWriteRowResponse

@@ -97,7 +97,8 @@ StatusOr<btadmin::Table> Cluster::CreateTable(std::string const& table_name,
                                               btadmin::Table schema) {
   schema.set_name(table_name);
   std::cout << "Creating table " << table_name << std::endl;
-  auto maybe_table = Table::Create(std::move(schema), should_persist_);
+  auto maybe_table =
+      Table::Create(std::move(schema), should_persist_, data_root_, true);
   if (!maybe_table) {
     return maybe_table.status();
   }
@@ -138,17 +139,34 @@ StatusOr<std::vector<btadmin::Table>> Cluster::ListTables(
 }
 
 StatusOr<btadmin::Table> Cluster::GetTable(std::string const& table_name,
-                                           btadmin::Table_View view) const {
+                                           btadmin::Table_View view) {
   std::shared_ptr<Table> found_table;
+
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = table_by_name_.find(table_name);
-    if (it == table_by_name_.end()) {
+    if (it != table_by_name_.end()) {
+      found_table = it->second;
+    }
+  }
+
+  if (!found_table) {
+    if (!should_persist_) {
       return NotFoundError("No such table.", GCP_ERROR_INFO().WithMetadata(
                                                  "table_name", table_name));
     }
-    found_table = it->second;
+
+    auto maybe_loaded = Table::Load(table_name, data_root_);
+    if (!maybe_loaded) return maybe_loaded.status();
+    auto loaded = std::move(maybe_loaded.value());
+
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      auto [it, inserted] = table_by_name_.emplace(table_name, loaded);
+      found_table = inserted ? std::move(loaded) : it->second;
+    }
   }
+
   return ApplyView(table_name, *found_table, view, btadmin::Table::SCHEMA_VIEW);
 }
 
@@ -180,10 +198,25 @@ StatusOr<std::shared_ptr<Table>> Cluster::FindTable(
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = table_by_name_.find(table_name);
-    if (it == table_by_name_.end()) {
-      return NotFoundError("No such table.", GCP_ERROR_INFO().WithMetadata(
-                                                 "table_name", table_name));
-    }
+    if (it != table_by_name_.end()) return it->second;
+  }
+
+  if (!should_persist_) {
+    return NotFoundError("No such table.", GCP_ERROR_INFO().WithMetadata(
+                                               "table_name", table_name));
+  }
+
+  // Try lazy-load from RocksDB
+  auto maybe_table = Table::Load(table_name, data_root_);
+  if (!maybe_table) {
+    return maybe_table.status();
+  }
+
+  // Another thread may loaded the table
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto [it, inserted] =
+        table_by_name_.emplace(table_name, maybe_table.value());
     return it->second;
   }
 }
