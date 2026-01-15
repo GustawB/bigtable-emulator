@@ -312,7 +312,7 @@ InMemoryColumnFamily::GetFilteredColumnFamilyStream(
 }
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
-PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
+PersistentColumnFamily::Create(std::shared_ptr<rocksdb::TransactionDB> db,
                                rocksdb::ColumnFamilyOptions opts,
                                std::string const& name) {
   PersistentColumnFamily pcf;
@@ -473,7 +473,7 @@ bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterRowChange()
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db,
+    std::string const& column_family_name, std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<StringRangeSet const> row_set)
     : column_family_name_(column_family_name),
       handle_(std::move(handle)),
@@ -575,7 +575,7 @@ InMemoryColumnFamily::ConstructAggregateColumnFamily(
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type,
-    std::shared_ptr<rocksdb::DB> db_, std::string const& name) {
+    std::shared_ptr<rocksdb::TransactionDB> db_, std::string const& name) {
   rocksdb::ColumnFamilyOptions opts;
   auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
   if (!maybe_cf) {
@@ -648,9 +648,9 @@ google::cloud::Status PersistentColumnFamily::ConfigureFromValueType(
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::OpenExisting(
-    std::shared_ptr<rocksdb::DB> db,
+    std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    absl::optional<google::bigtable::admin::v2::Type> value_type) {
+    const absl::optional<google::bigtable::admin::v2::Type>& value_type) {
   auto cf = std::make_shared<PersistentColumnFamily>();
   cf->db_ = std::move(db);
   cf->handle_ = std::move(handle);

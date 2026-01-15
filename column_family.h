@@ -24,7 +24,7 @@
 #include "key_coder.h"
 #include "range_set.h"
 #include <google/bigtable/admin/v2/types.pb.h>
-#include <rocksdb/db.h>
+#include "rocksdb/utilities/transaction_db.h"
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -498,13 +498,13 @@ class PersistentColumnFamily : public ColumnFamily {
  public:
   PersistentColumnFamily() = default;
   static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(
-      std::shared_ptr<rocksdb::DB> db, rocksdb::ColumnFamilyOptions opts,
+      std::shared_ptr<rocksdb::TransactionDB> db, rocksdb::ColumnFamilyOptions opts,
       std::string const& name);
 
   static StatusOr<std::shared_ptr<PersistentColumnFamily>> OpenExisting(
-      std::shared_ptr<rocksdb::DB> db,
+      std::shared_ptr<rocksdb::TransactionDB> db,
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      absl::optional<google::bigtable::admin::v2::Type> value_type);
+      const absl::optional<google::bigtable::admin::v2::Type>& value_type);
 
   PersistentColumnFamily(PersistentColumnFamily&& other) noexcept {
     db_ = std::move(other.db_);
@@ -533,7 +533,7 @@ class PersistentColumnFamily : public ColumnFamily {
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
   static StatusOr<std::shared_ptr<PersistentColumnFamily>>
   ConstructAggregateColumnFamily(google::bigtable::admin::v2::Type value_type,
-                                 std::shared_ptr<rocksdb::DB> db_,
+                                 std::shared_ptr<rocksdb::TransactionDB> db_,
                                  std::string const& name);
 
   /**
@@ -551,7 +551,7 @@ class PersistentColumnFamily : public ColumnFamily {
 
  private:
   // Owning  table
-  std::shared_ptr<rocksdb::DB> db_;
+  std::shared_ptr<rocksdb::TransactionDB> db_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
   google::cloud::Status ConfigureFromValueType(
       absl::optional<google::bigtable::admin::v2::Type> const& value_type);
@@ -655,7 +655,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
  public:
   FilteredPersistentColumnFamilyStream(
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db,
+      std::string const& column_family_name, std::shared_ptr<rocksdb::TransactionDB> db,
       std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
@@ -669,7 +669,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
 
-  std::shared_ptr<rocksdb::DB> db_;
+  std::shared_ptr<rocksdb::TransactionDB> db_;
   std::shared_ptr<StringRangeSet const> row_set_;
   mutable bool initialized_{false};
   mutable std::unique_ptr<rocksdb::Iterator> it_;

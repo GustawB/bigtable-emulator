@@ -179,6 +179,16 @@ namespace emulator {
       return res;
     }
 
+    std::shared_ptr<rocksdb::ColumnFamilyHandle> AdoptHandle(
+    std::shared_ptr<rocksdb::TransactionDB> db,
+    rocksdb::ColumnFamilyHandle* raw) {
+      return std::shared_ptr<rocksdb::ColumnFamilyHandle>(
+          raw, [db = std::move(db)](rocksdb::ColumnFamilyHandle* h) {
+            if (!h) return;
+            (void)db->DestroyColumnFamilyHandle(h);
+          });
+    }
+
     constexpr char kSchemaKey[] = "t_emulator:meta:schema_pb";
   } // anonymous namespace
 
@@ -388,9 +398,6 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
       rocksdb::DB::ListColumnFamilies(options, db_path.string(), &cf_names);
 
   if (!list_s.ok()) {
-    if (list_s.IsNotFound()) {
-      std::cout << "YYYYYYYYYYYYYYYYYYYYYYYYYYYYY\n";
-    }
     if (allow_bootstrap_schema && list_s.IsNotFound()) {
       cf_names = {rocksdb::kDefaultColumnFamilyName};
     } else {
@@ -431,6 +438,11 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
   res->db_.reset(raw_db);
   res->table_name_ = schema.name();
 
+  std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>> handles_by_name;
+  for (std::size_t i = 0; i < descs.size(); ++i) {
+    handles_by_name[descs[i].name] = AdoptHandle(res->db_, raw_handles[i]);
+  }
+
   auto maybe_schema = res->LoadSchema();
   if (maybe_schema.ok()) {
     schema = std::move(maybe_schema.value());
@@ -450,17 +462,28 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
       opt_value_type = cfd.second.value_type();
     }
 
+    auto hit = handles_by_name.find(cfd.first);
+    if (hit != handles_by_name.end()) {
+      auto maybe_cf = PersistentColumnFamily::OpenExisting(
+          res->db_, hit->second, opt_value_type);
+      if (!maybe_cf) return maybe_cf.status();
+      res->column_families_.emplace(cfd.first, maybe_cf.value());
+      continue;
+    }
+
     if (opt_value_type.has_value()) {
       auto new_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
-          opt_value_type.value(), res->db_, res->table_name_);
+          opt_value_type.value(), res->db_, cfd.first);
       if (!new_cf) {
         return new_cf.status();
       }
       res->column_families_.emplace(cfd.first, new_cf.value());
+      handles_by_name[cfd.first] = new_cf.value()->GetHandle();
     } else {
       // TODO: handle opts
       rocksdb::ColumnFamilyOptions opts;
-      auto maybe_new_cf = PersistentColumnFamily::Create(res->db_, opts, cfd.first);
+      auto maybe_new_cf =
+          PersistentColumnFamily::Create(res->db_, opts, cfd.first);
       if (!maybe_new_cf.ok()) {
         return InternalError(
             "failed to create column family " + cfd.first +
@@ -468,8 +491,10 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
             GCP_ERROR_INFO().WithMetadata("schema", schema.DebugString()));
       }
       res->column_families_.emplace(cfd.first, maybe_new_cf.value());
+      handles_by_name[cfd.first] = maybe_new_cf.value()->GetHandle();
     }
   }
+
 
   return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));
 }
