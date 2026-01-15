@@ -73,7 +73,7 @@ class TableUtilities {
 
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
       google::bigtable::admin::v2::Table const& schema, bool should_persist,
-      std::string const& data_root);
+      std::string const& data_root, bool allow_bootstrap_schema);
 
   virtual std::unique_ptr<RowTransaction> NewRowTransaction(
       std::shared_ptr<Table> table, std::string const& row_key) = 0;
@@ -94,6 +94,10 @@ class TableUtilities {
   virtual StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) = 0;
+
+  virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) {
+    return Status();
+  }
 
   template <typename MESSAGE>
   StatusOr<std::shared_ptr<ColumnFamily>> FindColumnFamily(
@@ -173,7 +177,8 @@ class PersistentTableUtilities
  public:
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
       std::string const& data_root,
-      google::bigtable::admin::v2::Table const& schema);
+      google::bigtable::admin::v2::Table const& schema,
+      bool allow_bootstrap_schema);
 
   std::unique_ptr<RowTransaction> NewRowTransaction(
       std::shared_ptr<Table> table, std::string const& row_key) override;
@@ -194,6 +199,11 @@ class PersistentTableUtilities
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) override;
 
+  Status PersistSchema(
+      google::bigtable::admin::v2::Table const& schema) override;
+
+  StatusOr<google::bigtable::admin::v2::Table> LoadSchema() const;
+
   std::shared_ptr<PersistentTableUtilities> get() { return shared_from_this(); }
 
  private:
@@ -207,6 +217,8 @@ class PersistentTableUtilities
    * synchronization.
    */
   std::shared_ptr<rocksdb::TransactionDB> db_;
+  std::map<std::string, std::shared_ptr<rocksdb::ColumnFamilyHandle>>
+      handles_by_name_;
 };
 
 /// Objects of this class represent Bigtable tables.
@@ -214,7 +226,11 @@ class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       google::bigtable::admin::v2::Table schema, bool should_persist,
-      std::string const& data_root = "/root/");
+      std::string const& data_root = "/root/",
+      bool allow_bootstrap_schema = true);
+
+  static StatusOr<std::shared_ptr<Table>> Load(
+      std::string const& table_name, std::string const& data_root = "/root/");
 
   std::shared_ptr<Table> get() { return shared_from_this(); }
 
@@ -276,7 +292,8 @@ class Table : public std::enable_shared_from_this<Table> {
   google::bigtable::admin::v2::Table schema_;
 
   Status Construct(google::bigtable::admin::v2::Table schema,
-                   bool should_persist, std::string const& data_root);
+                   bool should_persist, std::string const& data_root,
+                   bool allow_bootstrap_schema);
 
   bool IsDeleteProtectedNoLock() const;
 
