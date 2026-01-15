@@ -473,7 +473,8 @@ bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterRowChange()
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    std::string const& column_family_name, std::shared_ptr<rocksdb::TransactionDB> db,
+    std::string const& column_family_name,
+    std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<StringRangeSet const> row_set)
     : column_family_name_(column_family_name),
       handle_(std::move(handle)),
@@ -650,7 +651,7 @@ StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::OpenExisting(
     std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    const absl::optional<google::bigtable::admin::v2::Type>& value_type) {
+    absl::optional<google::bigtable::admin::v2::Type> const& value_type) {
   auto cf = std::make_shared<PersistentColumnFamily>();
   cf->db_ = std::move(db);
   cf->handle_ = std::move(handle);

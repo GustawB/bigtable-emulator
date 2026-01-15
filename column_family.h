@@ -23,8 +23,8 @@
 #include "filtered_map.h"
 #include "key_coder.h"
 #include "range_set.h"
-#include <google/bigtable/admin/v2/types.pb.h>
 #include "rocksdb/utilities/transaction_db.h"
+#include <google/bigtable/admin/v2/types.pb.h>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -255,7 +255,6 @@ class ColumnFamily {
   // ConstructAggregateColumnFamily( google::bigtable::admin::v2::Type
   // value_type);
 
-
   virtual void RemoveAllDataFromColumnFamily() = 0;
 
   virtual std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
@@ -346,8 +345,8 @@ class InMemoryColumnFamily : public ColumnFamily {
   // ColumnFamily that can support AddToCell or MergeToCell and
   // similar aggregate complex types. To construct an ordinary
   // ColumnFamily, use the default constructor ColumnFamily().
-  static StatusOr<std::shared_ptr<InMemoryColumnFamily>> ConstructAggregateColumnFamily(
-      google::bigtable::admin::v2::Type value_type);
+  static StatusOr<std::shared_ptr<InMemoryColumnFamily>>
+  ConstructAggregateColumnFamily(google::bigtable::admin::v2::Type value_type);
 
   // Disable copying.
   InMemoryColumnFamily(InMemoryColumnFamily const&) = delete;
@@ -368,7 +367,7 @@ class InMemoryColumnFamily : public ColumnFamily {
     return rows_[row_key].ReadModifyWrite(column_qualifier, append_value);
   };
 
-    /**
+  /**
    * Insert or update and existing cell at a given row, column and timestamp.
    *
    * @param row_key the row key at which to update the value.
@@ -381,9 +380,10 @@ class InMemoryColumnFamily : public ColumnFamily {
    *     the previous value of the timestamp.
    *
    */
-  absl::optional<std::string> SetCell(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp, std::string const& value);
+  absl::optional<std::string> SetCell(std::string const& row_key,
+                                      std::string const& column_qualifier,
+                                      std::chrono::milliseconds timestamp,
+                                      std::string const& value);
 
   /**
    * UpdateCell is like SetCell except that, when a cell exists with
@@ -445,9 +445,9 @@ class InMemoryColumnFamily : public ColumnFamily {
    *     that timestamp in then given column in the given row,
    *     otherwise absl::nullopt.
    */
-  absl::optional<Cell> DeleteTimeStamp(
-      std::string const& row_key, std::string const& column_qualifier,
-      std::chrono::milliseconds timestamp);
+  absl::optional<Cell> DeleteTimeStamp(std::string const& row_key,
+                                       std::string const& column_qualifier,
+                                       std::chrono::milliseconds timestamp);
 
   const_iterator begin() const { return rows_.begin(); }
   iterator begin() { return rows_.begin(); }
@@ -498,13 +498,13 @@ class PersistentColumnFamily : public ColumnFamily {
  public:
   PersistentColumnFamily() = default;
   static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(
-      std::shared_ptr<rocksdb::TransactionDB> db, rocksdb::ColumnFamilyOptions opts,
-      std::string const& name);
+      std::shared_ptr<rocksdb::TransactionDB> db,
+      rocksdb::ColumnFamilyOptions opts, std::string const& name);
 
   static StatusOr<std::shared_ptr<PersistentColumnFamily>> OpenExisting(
       std::shared_ptr<rocksdb::TransactionDB> db,
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      const absl::optional<google::bigtable::admin::v2::Type>& value_type);
+      absl::optional<google::bigtable::admin::v2::Type> const& value_type);
 
   PersistentColumnFamily(PersistentColumnFamily&& other) noexcept {
     db_ = std::move(other.db_);
@@ -655,7 +655,8 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
  public:
   FilteredPersistentColumnFamilyStream(
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      std::string const& column_family_name, std::shared_ptr<rocksdb::TransactionDB> db,
+      std::string const& column_family_name,
+      std::shared_ptr<rocksdb::TransactionDB> db,
       std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;

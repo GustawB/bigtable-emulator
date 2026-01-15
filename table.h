@@ -75,7 +75,8 @@ class TableUtilities {
       google::bigtable::admin::v2::Table& schema, bool should_persist,
       std::string const& data_root, bool allow_bootstrap_schema);
 
-  virtual std::unique_ptr<RowTransaction> NewRowTransaction(std::string const& row_key) = 0;
+  virtual std::unique_ptr<RowTransaction> NewRowTransaction(
+      std::string const& row_key) = 0;
 
   virtual StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
@@ -91,9 +92,9 @@ class TableUtilities {
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) = 0;
 
-    virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) {
-        return Status();
-    }
+  virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) {
+    return Status();
+  }
 };
 
 class InMemoryTableUtilities
@@ -103,7 +104,8 @@ class InMemoryTableUtilities
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
       google::bigtable::admin::v2::Table const& schema);
 
-  std::unique_ptr<RowTransaction> NewRowTransaction(std::string const& row_key) override;
+  std::unique_ptr<RowTransaction> NewRowTransaction(
+      std::string const& row_key) override;
 
   StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
@@ -123,7 +125,7 @@ class InMemoryTableUtilities
     for (auto& column_family : column_families_) {
       column_family.second->RemoveAllDataFromColumnFamily();
     }
-      return Status();
+    return Status();
   }
 
   Status DropRowRange(std::string const& row_key_prefix) override {
@@ -138,7 +140,7 @@ class InMemoryTableUtilities
         }
       }
     }
-      return Status();
+    return Status();
   }
 
   StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
@@ -147,23 +149,24 @@ class InMemoryTableUtilities
 
   std::shared_ptr<InMemoryTableUtilities> get() { return shared_from_this(); }
 
-    template <typename MESSAGE>
-    StatusOr<std::shared_ptr<InMemoryColumnFamily>> FindColumnFamily(
-        MESSAGE const& message) const;
+  template <typename MESSAGE>
+  StatusOr<std::shared_ptr<InMemoryColumnFamily>> FindColumnFamily(
+      MESSAGE const& message) const;
 
-    std::map<std::string, std::shared_ptr<InMemoryColumnFamily>>::iterator begin() {
-        return column_families_.begin();
-    }
-    std::map<std::string, std::shared_ptr<InMemoryColumnFamily>>::iterator end() {
-        return column_families_.end();
-    }
-    std::map<std::string, std::shared_ptr<InMemoryColumnFamily>>::iterator find(
-        std::string const& column_family) {
-        return column_families_.find(column_family);
-    }
+  std::map<std::string, std::shared_ptr<InMemoryColumnFamily>>::iterator
+  begin() {
+    return column_families_.begin();
+  }
+  std::map<std::string, std::shared_ptr<InMemoryColumnFamily>>::iterator end() {
+    return column_families_.end();
+  }
+  std::map<std::string, std::shared_ptr<InMemoryColumnFamily>>::iterator find(
+      std::string const& column_family) {
+    return column_families_.find(column_family);
+  }
 
-private:
-    std::map<std::string, std::shared_ptr<InMemoryColumnFamily>> column_families_;
+ private:
+  std::map<std::string, std::shared_ptr<InMemoryColumnFamily>> column_families_;
 };
 
 class PersistentTableUtilities
@@ -171,11 +174,11 @@ class PersistentTableUtilities
       public std::enable_shared_from_this<PersistentTableUtilities> {
  public:
   static StatusOr<std::shared_ptr<TableUtilities>> Create(
-      std::string const& data_root,
-      google::bigtable::admin::v2::Table& schema,
+      std::string const& data_root, google::bigtable::admin::v2::Table& schema,
       bool allow_bootstrap_schema);
 
-  std::unique_ptr<RowTransaction> NewRowTransaction(std::string const& row_key) override;
+  std::unique_ptr<RowTransaction> NewRowTransaction(
+      std::string const& row_key) override;
 
   StatusOr<CellStream> CreateCellStream(
       std::shared_ptr<StringRangeSet> range_set,
@@ -198,9 +201,9 @@ class PersistentTableUtilities
 
   std::shared_ptr<PersistentTableUtilities> get() { return shared_from_this(); }
 
-    template <typename MESSAGE>
-    StatusOr<std::shared_ptr<PersistentColumnFamily>> FindColumnFamily(
-        MESSAGE const& message) const;
+  template <typename MESSAGE>
+  StatusOr<std::shared_ptr<PersistentColumnFamily>> FindColumnFamily(
+      MESSAGE const& message) const;
 
  private:
   std::string table_name_;
@@ -213,7 +216,8 @@ class PersistentTableUtilities
    * synchronization.
    */
   std::shared_ptr<rocksdb::TransactionDB> db_;
-    std::map<std::string, std::shared_ptr<PersistentColumnFamily>> column_families_;
+  std::map<std::string, std::shared_ptr<PersistentColumnFamily>>
+      column_families_;
 };
 
 /// Objects of this class represent Bigtable tables.
@@ -262,7 +266,8 @@ class Table : public std::enable_shared_from_this<Table> {
 
   Status SampleRowKeys(
       double pass_probability,
-      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer) const;
+      grpc::ServerWriter<google::bigtable::v2::SampleRowKeysResponse>* writer)
+      const;
 
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request);
@@ -298,8 +303,7 @@ class Table : public std::enable_shared_from_this<Table> {
 
 class RowTransaction {
  public:
-  explicit RowTransaction(std::string const& row_key)
-      : row_key_(row_key) {}
+  explicit RowTransaction(std::string const& row_key) : row_key_(row_key) {}
   virtual ~RowTransaction() = default;
 
   virtual Status commit() = 0;
@@ -337,8 +341,9 @@ class RowTransaction {
 
 class InMemoryRowTransaction : public RowTransaction {
  public:
-  explicit InMemoryRowTransaction(std::shared_ptr<InMemoryTableUtilities> utilities,
-                                  std::string const& row_key)
+  explicit InMemoryRowTransaction(
+      std::shared_ptr<InMemoryTableUtilities> utilities,
+      std::string const& row_key)
       : RowTransaction(row_key), utilities_(std::move(utilities)) {}
 
   ~InMemoryRowTransaction() override {
@@ -352,7 +357,7 @@ class InMemoryRowTransaction : public RowTransaction {
     return Status();
   }
 
-    Status AddToCell(
+  Status AddToCell(
       ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
       absl::optional<std::chrono::milliseconds> timestamp_override) override;
 
@@ -376,23 +381,23 @@ class InMemoryRowTransaction : public RowTransaction {
 
  private:
   void Undo();
-    std::shared_ptr<InMemoryTableUtilities> utilities_;
+  std::shared_ptr<InMemoryTableUtilities> utilities_;
   bool committed_ = false;
   std::stack<absl::variant<DeleteValue, RestoreValue>> undo_;
 };
 
 class PersistentRowTransaction : public RowTransaction {
  public:
-  explicit PersistentRowTransaction(std::shared_ptr<PersistentTableUtilities> utilities,
-                                    std::string const& row_key,
-                                    rocksdb::TransactionDB* db)
+  explicit PersistentRowTransaction(
+      std::shared_ptr<PersistentTableUtilities> utilities,
+      std::string const& row_key, rocksdb::TransactionDB* db)
       : RowTransaction(row_key), utilities_(std::move(utilities)) {
     txn_ = std::unique_ptr<rocksdb::Transaction>(
         db->BeginTransaction(rocksdb::WriteOptions()));
   }
 
   Status commit() override;
-    Status AddToCell(
+  Status AddToCell(
       ::google::bigtable::v2::Mutation_AddToCell const& add_to_cell,
       absl::optional<std::chrono::milliseconds> timestamp_override) override;
   Status SetCell(
@@ -412,7 +417,7 @@ class PersistentRowTransaction : public RowTransaction {
 
  private:
   std::unique_ptr<rocksdb::Transaction> txn_;
-    std::shared_ptr<PersistentTableUtilities> utilities_;
+  std::shared_ptr<PersistentTableUtilities> utilities_;
 };
 
 class InMemoryTable : public Table {
