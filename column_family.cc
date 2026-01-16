@@ -312,7 +312,7 @@ InMemoryColumnFamily::GetFilteredColumnFamilyStream(
 }
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
-PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
+PersistentColumnFamily::Create(std::shared_ptr<rocksdb::TransactionDB> db,
                                rocksdb::ColumnFamilyOptions opts,
                                std::string const& name) {
   PersistentColumnFamily pcf;
@@ -337,42 +337,6 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::DB> db,
 PersistentColumnFamily::~PersistentColumnFamily() {
   // We only want to drop column family in ModifyColumnFamilies / DropTable /
   // rollback
-}
-
-absl::optional<std::string> PersistentColumnFamily::SetCell(
-    std::string const& row_key, std::string const& column_qualifier,
-    std::chrono::milliseconds timestamp, std::string const& value) {
-  return {};
-}
-
-StatusOr<absl::optional<std::string>> PersistentColumnFamily::UpdateCell(
-    std::string const& row_key, std::string const& column_qualifier,
-    std::chrono::milliseconds timestamp, std::string& value) {
-  return Status();
-}
-
-std::map<std::string, std::vector<Cell>> PersistentColumnFamily::DeleteRow(
-    std::string const& row_key) {
-  return {};
-}
-
-std::vector<Cell> PersistentColumnFamily::DeleteColumn(
-    std::string const& row_key, std::string const& column_qualifier,
-    ::google::bigtable::v2::TimestampRange const& time_range) {
-  return {};
-}
-
-std::vector<Cell> PersistentColumnFamily::DeleteColumn(
-    std::map<std::string, ColumnFamilyRow>::iterator row_it,
-    std::string const& column_qualifier,
-    ::google::bigtable::v2::TimestampRange const& time_range) {
-  return {};
-}
-
-absl::optional<Cell> PersistentColumnFamily::DeleteTimeStamp(
-    std::string const& row_key, std::string const& column_qualifier,
-    std::chrono::milliseconds timestamp) {
-  return {};
 }
 
 std::unique_ptr<AbstractCellStreamImpl>
@@ -509,7 +473,8 @@ bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterRowChange()
 
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    std::string const& column_family_name, std::shared_ptr<rocksdb::DB> db,
+    std::string const& column_family_name,
+    std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<StringRangeSet const> row_set)
     : column_family_name_(column_family_name),
       handle_(std::move(handle)),
@@ -572,7 +537,7 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
   }
 }
 
-StatusOr<std::shared_ptr<ColumnFamily>>
+StatusOr<std::shared_ptr<InMemoryColumnFamily>>
 InMemoryColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type) {
   auto cf = std::make_shared<InMemoryColumnFamily>();
@@ -599,7 +564,7 @@ InMemoryColumnFamily::ConstructAggregateColumnFamily(
 
     cf->value_type_ = std::move(value_type);
 
-    return std::static_pointer_cast<ColumnFamily>(cf);
+    return cf;
   }
 
   return InvalidArgumentError(
@@ -611,7 +576,7 @@ InMemoryColumnFamily::ConstructAggregateColumnFamily(
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type,
-    std::shared_ptr<rocksdb::DB> db_, std::string const& name) {
+    std::shared_ptr<rocksdb::TransactionDB> db_, std::string const& name) {
   rocksdb::ColumnFamilyOptions opts;
   auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
   if (!maybe_cf) {
@@ -684,9 +649,9 @@ google::cloud::Status PersistentColumnFamily::ConfigureFromValueType(
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::OpenExisting(
-    std::shared_ptr<rocksdb::DB> db,
+    std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    absl::optional<google::bigtable::admin::v2::Type> value_type) {
+    absl::optional<google::bigtable::admin::v2::Type> const& value_type) {
   auto cf = std::make_shared<PersistentColumnFamily>();
   cf->db_ = std::move(db);
   cf->handle_ = std::move(handle);

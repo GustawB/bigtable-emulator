@@ -34,7 +34,6 @@ StatusOr<std::shared_ptr<Table>> CreateTable(
     (*schema.mutable_column_families())[column_family_name] =
         ::google::bigtable::admin::v2::ColumnFamily();
   }
-
   return Table::Create(schema, false);
 }
 
@@ -42,7 +41,8 @@ Status HasCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
                std::string const& column_family, std::string const& row_key,
                std::string const& column_qualifier, int64_t timestamp_micros,
                std::string const& value) {
-  auto utilities = table->GetUtilities();
+  auto utilities =
+      std::static_pointer_cast<InMemoryTableUtilities>(table->GetUtilities());
   auto column_family_it = utilities->find(column_family);
   if (column_family_it == utilities->end()) {
     return NotFoundError(
