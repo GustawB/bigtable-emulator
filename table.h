@@ -92,9 +92,7 @@ class TableUtilities {
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) = 0;
 
-  virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) {
-    return Status();
-  }
+  virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) = 0;
 };
 
 class InMemoryTableUtilities
@@ -146,6 +144,11 @@ class InMemoryTableUtilities
   StatusOr<google::bigtable::admin::v2::Table> ModifyColumnFamilies(
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) override;
+
+    Status PersistSchema(
+      google::bigtable::admin::v2::Table const& /*schema*/) override {
+        return Status();
+    }
 
   std::shared_ptr<InMemoryTableUtilities> get() { return shared_from_this(); }
 

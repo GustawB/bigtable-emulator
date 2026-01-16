@@ -255,8 +255,6 @@ class ColumnFamily {
   // ConstructAggregateColumnFamily( google::bigtable::admin::v2::Type
   // value_type);
 
-  virtual void RemoveAllDataFromColumnFamily() = 0;
-
   virtual std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
       std::shared_ptr<StringRangeSet const> row_set,
       std::string column_family_name) = 0;
@@ -477,7 +475,9 @@ class InMemoryColumnFamily : public ColumnFamily {
     return rows_.erase(row_it);
   }
 
-  void RemoveAllDataFromColumnFamily() override { rows_.clear(); };
+  void RemoveAllDataFromColumnFamily() {
+      rows_.clear();
+  };
 
   std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
       std::shared_ptr<StringRangeSet const> row_set,
@@ -512,17 +512,13 @@ class PersistentColumnFamily : public ColumnFamily {
     value_type_ = std::move(other.value_type_);
   }
 
-  void RemoveAllDataFromColumnFamily() override { throw "UNIMPLEMENTED"; };
+    bool RowKeyExists(std::string const& row_key) override;
 
-  rocksdb::ColumnFamilyHandle* GetRaw() { return handle_.get(); }
+  rocksdb::ColumnFamilyHandle* GetRaw() const { return handle_.get(); }
 
   std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
       std::shared_ptr<StringRangeSet const> row_set,
       std::string column_family_name) override;
-
-  bool RowKeyExists(std::string const& row_key) override {
-    throw "UNIMPLEMENTED";
-  };
 
   void ResetHandle(std::shared_ptr<rocksdb::ColumnFamilyHandle> h) {
     handle_ = std::move(h);
@@ -677,9 +673,6 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   mutable std::string curr_value_string_;
   mutable DecodeResult curr_decoded_key_;
   mutable absl::optional<CellView> cur_value_;
-
-  // TODO: Discuss if its okay, or should we e.g. forbid using ':' elsewhere
-  char const row_col_separator_ = ':';
 };
 
 }  // namespace emulator

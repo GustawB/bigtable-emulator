@@ -661,6 +661,27 @@ PersistentColumnFamily::OpenExisting(
   return cf;
 }
 
+  bool PersistentColumnFamily::RowKeyExists(std::string const &row_key) {
+    auto it = std::unique_ptr<rocksdb::Iterator>(
+        db_->NewIterator(rocksdb::ReadOptions(), handle_.get()));
+
+    it->Seek(row_key);
+    if (!it->Valid()) {
+      return false;
+    }
+
+    auto value = it->value();
+    auto res = KeyCoder::Decode(value.ToString());
+    if (!res.ok()) {
+      return false;
+    }
+
+    if (res.value().row == row_key) {
+      return true;
+    }
+    return false;
+  }
+
 }  // namespace emulator
 }  // namespace bigtable
 }  // namespace cloud
