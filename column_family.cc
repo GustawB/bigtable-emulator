@@ -334,11 +334,6 @@ PersistentColumnFamily::Create(std::shared_ptr<rocksdb::TransactionDB> db,
   return std::make_shared<PersistentColumnFamily>(std::move(pcf));
 }
 
-PersistentColumnFamily::~PersistentColumnFamily() {
-  // We only want to drop column family in ModifyColumnFamilies / DropTable /
-  // rollback
-}
-
 std::unique_ptr<AbstractCellStreamImpl>
 PersistentColumnFamily::GetFilteredColumnFamilyStream(
     std::shared_ptr<StringRangeSet const> row_set,
@@ -509,14 +504,31 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   cur_value_.reset();
   if (mode == NextMode::kCell) {
     it_->Next();
-    if (it_->Valid()) {
-      curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
+  } else if (mode == NextMode::kColumn) {
+    while (it_->Valid()) {
+      auto maybe_decoded = KeyCoder::Decode(std::string_view(it_->key().data(), it_->key().size()));
+      if (!maybe_decoded.ok()) {
+        return false;
+      }
+      if (maybe_decoded.value().col != curr_decoded_key_.col) {
+        break;
+      }
+      it_->Next();
     }
-    return true;
+  } else if (mode == NextMode::kRow) {
+    it_->Seek(curr_decoded_key_.row + "\xFF");
   } else {
-    // TODO: Implement other types of iterator
     return false;
   }
+
+  if (it_->Valid()) {
+    auto maybe_decoded = KeyCoder::Decode(std::string_view(it_->key().data(), it_->key().size()));
+    if (!maybe_decoded.ok()) {
+      return false;
+    }
+    curr_decoded_key_ = maybe_decoded.value();
+  }
+  return true;
 }
 
 void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
@@ -524,7 +536,6 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     initialized_ = true;
 
     rocksdb::ReadOptions opts;
-    // TODO: handle timestamp limits
     it_ = std::unique_ptr<rocksdb::Iterator>(
         db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();

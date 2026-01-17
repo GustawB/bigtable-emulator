@@ -1,4 +1,5 @@
 #include "key_coder.h"
+#include <charconv>
 
 namespace google {
 namespace cloud {
@@ -36,7 +37,7 @@ std::string KeyCoder::PartialEncode(std::string const& row,
     return buffer;
 }
 
-StatusOr<DecodeResult> KeyCoder::Decode(std::string const& full_key) {
+StatusOr<DecodeResult> KeyCoder::Decode(std::string_view full_key) {
     size_t pos = 0;
     DecodeResult decode_result;
     auto res = ConsumeField(full_key, pos);
@@ -51,13 +52,19 @@ StatusOr<DecodeResult> KeyCoder::Decode(std::string const& full_key) {
         return InternalError("Received invalid key",
                              GCP_ERROR_INFO().WithMetadata("key", full_key));
 
-    std::string ts_hex = full_key.substr(pos);
-    try {
-        uint64_t be_ts = std::stoull(ts_hex, nullptr, 16);
+    std::string_view ts_hex = full_key.substr(pos);
+    uint64_t be_ts;
+
+    // std::from_chars is the high-rizz way to parse without strings
+    auto [ptr, ec] = std::from_chars(ts_hex.data(), ts_hex.data() + ts_hex.size(), be_ts, 16);
+
+    if (ec == std::errc()) {
         decode_result.timestamp = ~be_ts;
-    } catch (...) {
+    } else {
+        // We actually have to make a string for the error metadata,
+        // but only when things are already cooked.
         return InternalError("Failed to parse timestamp hex",
-                             GCP_ERROR_INFO().WithMetadata("ts_hex", ts_hex));
+                             GCP_ERROR_INFO().WithMetadata("ts_hex", std::string(ts_hex)));
     }
 
     return decode_result;
@@ -79,7 +86,7 @@ void KeyCoder::AppendEscaped(std::string& dest, std::string const& src) {
     }
 }
 
-StatusOr<std::string> KeyCoder::ConsumeField(std::string const& src,
+StatusOr<std::string> KeyCoder::ConsumeField(std::string_view src,
                                             size_t& pos) {
     std::string res;
     while (pos < src.size()) {

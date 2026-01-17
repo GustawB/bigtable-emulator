@@ -34,12 +34,12 @@ class KeyCoder {
   static std::string PartialEncode(std::string const& row,
                                    std::string const& col);
 
-  static StatusOr<DecodeResult> Decode(std::string const& full_key);
+  static StatusOr<DecodeResult> Decode(std::string_view full_key);
 
  private:
   static void AppendEscaped(std::string& dest, std::string const& src);
 
-  static StatusOr<std::string> ConsumeField(std::string const& src,
+  static StatusOr<std::string> ConsumeField(std::string_view src,
                                             size_t& pos);
 };
 

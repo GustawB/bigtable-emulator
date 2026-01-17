@@ -524,7 +524,6 @@ class PersistentColumnFamily : public ColumnFamily {
     handle_ = std::move(h);
   }
 
-  ~PersistentColumnFamily() override;
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
   static StatusOr<std::shared_ptr<PersistentColumnFamily>>
