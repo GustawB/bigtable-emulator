@@ -1804,8 +1804,88 @@ Status PersistentRowTransaction::AddToCell(
 Status PersistentRowTransaction::DeleteFromColumn(
     ::google::bigtable::v2::Mutation_DeleteFromColumn const&
         delete_from_column) {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  auto maybe_column_family = utilities_->FindColumnFamily(delete_from_column);
+  if (!maybe_column_family.ok()) {
+    return maybe_column_family.status();
+  }
+
+  // We need to check if the given timerange is empty or reversed, but
+  // only up to the server's time accuracy (in our case, milliseconds)
+  // - For example a time range of [1000, 1200] would be empty.
+  uint64_t start_count = std::numeric_limits<uint64_t>::min();
+  uint64_t end_count = std::numeric_limits<uint64_t>::min();
+  if (delete_from_column.has_time_range()) {
+    auto start = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::microseconds(
+            delete_from_column.time_range().start_timestamp_micros()));
+    auto end = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::microseconds(
+            delete_from_column.time_range().end_timestamp_micros()));
+
+    // An end timestamp micros of 0 is to be interpreted as infinity,
+    // so we allow that.
+    if (end <= start &&
+        delete_from_column.time_range().end_timestamp_micros() != 0) {
+      return InvalidArgumentError(
+          "empty or reversed time range: the end timestamp must be more than "
+          "the start timestamp when they are truncated to the server's time "
+          "precision (milliseconds)",
+          GCP_ERROR_INFO().WithMetadata("delete_from_column proto",
+                                        delete_from_column.DebugString()));
+        }
+
+    start_count = start.count();
+    end_count = end.count();
+  }
+
+  // The idea here is to iterate over each row, and for each row
+  // lock the specified col+timestamp range
+
+  std::vector<std::string> starts;
+  std::vector<std::string> ends;
+
+  // 1. Acquire locks
+  auto const& column_family = maybe_column_family.value();
+  auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+        utilities_->db_->NewIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
+  cf_it->SeekToFirst();
+  while (cf_it->Valid()) {
+    auto maybe_decoded = KeyCoder::Decode(std::string_view(cf_it->key().data(), cf_it->key().size()));
+    if (!maybe_decoded) {
+      return InternalError("Failed to delete from column: " + maybe_decoded.status().message(), GCP_ERROR_INFO());
+    }
+    const auto& decoded = maybe_decoded.value();
+
+    auto start_key = KeyCoder::Encode(decoded.row, delete_from_column.column_qualifier(), start_count);
+    auto end_key = KeyCoder::Encode(decoded.row, delete_from_column.column_qualifier(), end_count);
+    rocksdb::Endpoint start(start_key, true);
+    rocksdb::Endpoint end(end_key, true);
+    rocksdb::Status status = txn_->GetRangeLock(column_family->GetRaw(), start, end);
+    if (!status.ok()) {
+      return InternalError("Failed to delete from column: " + status.ToString(), GCP_ERROR_INFO());
+    }
+    starts.push_back(start_key);
+    ends.push_back(end_key);
+
+    cf_it->Seek(decoded.row + "\xFF");
+  }
+  cf_it->Refresh();
+
+  // 2. Now that things to delete are locked, we can delete them
+  for (auto i = 0; i < starts.size(); ++i) {
+    cf_it->Seek(starts[i]);
+    while (cf_it->Valid()) {
+      if (cf_it->key().ToString() > ends[i]) {
+        break;
+      }
+      auto status = txn_->Delete(column_family->GetRaw(), cf_it->key());
+      if (!status.ok()) {
+        return InternalError("Failed to delete from column: " + status.ToString(), GCP_ERROR_INFO());
+      }
+    }
+  }
+
+  return Status();
 }
 
 Status PersistentRowTransaction::DeleteFromRow() {
@@ -1823,6 +1903,7 @@ Status PersistentRowTransaction::DeleteFromFamily(
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
 PersistentRowTransaction::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
+  // TODO: Implement
   return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
 }
 

@@ -208,6 +208,8 @@ class PersistentTableUtilities
   StatusOr<std::shared_ptr<PersistentColumnFamily>> FindColumnFamily(
       MESSAGE const& message) const;
 
+    friend PersistentRowTransaction;
+
  private:
   std::string table_name_;
   /**
