@@ -519,8 +519,14 @@ bool FilteredPersistentColumnFamilyStream::HasValue() const {
   return it_->Valid();
 }
 
-CellView const& FilteredPersistentColumnFamilyStream::Value() const {
+  CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
+  if (!cur_value_) {
+    cur_value_ = CellView(
+        curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
+        std::chrono::milliseconds(curr_decoded_key_.timestamp),
+        curr_value_string_);
+  }
   return cur_value_.value();
 }
 
@@ -554,10 +560,7 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
       return false;
     }
     curr_decoded_key_ = maybe_decoded.value();
-    cur_value_ = CellView(
-        curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
-        std::chrono::milliseconds(curr_decoded_key_.timestamp),
-        curr_value_string_);
+    curr_value_string_ = it_->value().ToString();
   }
   return true;
 }
@@ -572,6 +575,7 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     it_->SeekToFirst();
     if (it_->Valid()) {
       curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
+      curr_value_string_ = it_->value().ToString();
     } else {
       // TODO: remove debug print
       std::cout << it_->status().ToString() << std::endl;

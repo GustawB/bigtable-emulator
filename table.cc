@@ -1335,7 +1335,6 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
     row_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
   }
   std::lock_guard<std::mutex> lock(mu_);
-
   StatusOr<CellStream> maybe_stream;
   if (request.has_filter()) {
     maybe_stream =
@@ -1350,7 +1349,6 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
 
   std::int64_t rows_count = 0;
   absl::optional<std::string> current_row_key;
-
   CellStream& stream = *maybe_stream;
   for (; stream; ++stream) {
     std::cout << "Row: " << stream->row_key()
@@ -1360,7 +1358,6 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
               << " column_value: " << stream->value() << " label: "
               << (stream->HasLabel() ? stream->label() : std::string("unset"))
               << std::endl;
-
     if (request.rows_limit() > 0) {
       if (!current_row_key.has_value() ||
           stream->row_key() != current_row_key.value()) {
@@ -1879,7 +1876,7 @@ Status PersistentRowTransaction::DeleteFromColumn(
   cf_it->Refresh();
 
   // 2. Now that things to delete are locked, we can delete them
-  for (auto i = 0; i < starts.size(); ++i) {
+  for (size_t i = 0; i < starts.size(); ++i) {
     cf_it->Seek(starts[i]);
     while (cf_it->Valid()) {
       if (cf_it->key().ToString() > ends[i]) {
@@ -1958,7 +1955,7 @@ PersistentRowTransaction::ReadModifyWriteRow(
     cf_it->Seek(partial_key);
 
     // 3. Main logic
-    int64_t system_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+    uint64_t system_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::system_clock::now().time_since_epoch())
                             .count();
     if (!cf_it->Valid()) {
