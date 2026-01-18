@@ -1903,8 +1903,119 @@ Status PersistentRowTransaction::DeleteFromFamily(
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
 PersistentRowTransaction::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  if (row_key_.empty()) {
+    return InvalidArgumentError(
+        "row key not set",
+        GCP_ERROR_INFO().WithMetadata("request", request.DebugString()));
+  }
+
+  // Copying behaviour from the InMemoryRowTransaction.
+  // In this case, InMemoryColumnFamily is a perfect storage
+  // for the partial results, and it lets us reuse some logic
+  // from the InMemoryRowTransaction.
+  std::map<std::string, InMemoryColumnFamily> tmp_families;
+
+  for (auto const& rule : request.rules()) {
+    auto maybe_column_family = utilities_->FindColumnFamily(rule);
+    if (!maybe_column_family) {
+      return maybe_column_family.status();
+    }
+
+    if (!rule.has_increment_amount() && !rule.has_append_value()) {
+      return InvalidArgumentError(
+          "either append value or increment amount must be set",
+          GCP_ERROR_INFO().WithMetadata("rule", rule.DebugString()));
+    }
+
+    auto column_family = maybe_column_family.value();
+    std::string partial_key = KeyCoder::PartialEncode(request.row_key(), rule.column_qualifier());
+
+    // 1. Lock the key range
+    rocksdb::Endpoint start(partial_key, true);
+    rocksdb::Endpoint end(partial_key + "\xFF", true);
+    rocksdb::Status status = txn_->GetRangeLock(column_family->GetRaw(), start, end);
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to read modify row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+    }
+
+    // 2. Acquire iterator to the first value in range (if exists)
+    auto cf_it = std::unique_ptr<rocksdb::Iterator>(utilities_->db_->NewIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
+    cf_it->Seek(partial_key);
+
+    // 3. Main logic
+    int64_t system_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    if (!cf_it->Valid()) {
+      txn_->Put(column_family->GetRaw(), KeyCoder::Encode(request.row_key(), rule.column_qualifier(), system_ms), rule.append_value());
+      continue;
+    }
+
+    auto maybe_decoded = KeyCoder::Decode(std::string_view(cf_it->key().data(), cf_it->key().size()));
+    if (!maybe_decoded) {
+      return InvalidArgumentError(
+        "either append value or increment amount must be set",
+        GCP_ERROR_INFO().WithMetadata("rule", rule.DebugString()));
+    }
+    const auto& decoded_key = maybe_decoded.value();
+    if (decoded_key.row != request.row_key() || decoded_key.col != rule.column_qualifier()) {
+      txn_->Put(column_family->GetRaw(), KeyCoder::Encode(request.row_key(), rule.column_qualifier(), system_ms), rule.append_value());
+      continue;
+    }
+
+    std::string prev_value;
+    status = txn_->Get(rocksdb::ReadOptions(), column_family->GetRaw(), cf_it->key(), &prev_value);
+    if (!status.ok()) {
+      return InternalError(
+        "Failed to read modify row: " + status.ToString(),
+        GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+    }
+
+    std::string value;
+    if (rule.has_append_value()) {
+      value = prev_value + rule.append_value();
+    } else { // has increment value
+      auto maybe_prev_value_int =
+        google::cloud::internal::DecodeBigEndian<std::int64_t>(prev_value);
+      if (!maybe_prev_value_int) {
+        return maybe_column_family.status();
+      }
+      value = google::cloud::internal::EncodeBigEndian(rule.increment_amount() + maybe_prev_value_int.value());
+    }
+
+    auto result_timestamp = std::chrono::milliseconds(system_ms);
+    if (decoded_key.timestamp > system_ms) {
+      result_timestamp = std::chrono::milliseconds(decoded_key.timestamp);
+      status = txn_->Delete(column_family->GetRaw(), cf_it->key());
+      if (!status.ok()) {
+        return InternalError(
+          "Failed to read modify row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+      }
+      status = txn_->Put(column_family->GetRaw(), cf_it->key(), value);
+      if (!status.ok()) {
+        return InternalError(
+          "Failed to read modify row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+      }
+    } else {
+      std::string new_key = KeyCoder::Encode(request.row_key(), rule.column_qualifier(), system_ms);
+      status = txn_->Put(column_family->GetRaw(), new_key, value);
+      if (!status.ok()) {
+        return InternalError(
+          "Failed to read modify row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+      }
+    }
+
+    tmp_families[rule.family_name()].SetCell(request.row_key(), rule.column_qualifier(),
+                                           result_timestamp,
+                                           std::move(value));
+  }
+
+  // Reusing functionality from the InMemory impl.
+  return FamiliesToReadModifyWriteResponse(row_key_, tmp_families);
 }
 
 google::bigtable::v2::ReadModifyWriteRowResponse
