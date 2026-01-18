@@ -1801,15 +1801,17 @@ Status PersistentRowTransaction::AddToCell(
 Status PersistentRowTransaction::DeleteFromColumn(
     ::google::bigtable::v2::Mutation_DeleteFromColumn const&
         delete_from_column) {
+  std::cout << "A\n";
   auto maybe_column_family = utilities_->FindColumnFamily(delete_from_column);
   if (!maybe_column_family.ok()) {
     return maybe_column_family.status();
   }
 
+  std::cout << "B\n";
   // We need to check if the given timerange is empty or reversed, but
   // only up to the server's time accuracy (in our case, milliseconds)
   // - For example a time range of [1000, 1200] would be empty.
-  uint64_t start_count = std::numeric_limits<uint64_t>::min();
+  uint64_t start_count = std::numeric_limits<uint64_t>::max();
   uint64_t end_count = std::numeric_limits<uint64_t>::min();
   if (delete_from_column.has_time_range()) {
     auto start = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1834,6 +1836,7 @@ Status PersistentRowTransaction::DeleteFromColumn(
     start_count = start.count();
     end_count = end.count();
   }
+  std::cout << "C\n";
 
   // The idea here is to iterate over each row, and for each row
   // lock the specified col+timestamp range
@@ -1875,10 +1878,13 @@ Status PersistentRowTransaction::DeleteFromColumn(
   }
   cf_it->Refresh();
 
+  std::cout << "D\n";
   // 2. Now that things to delete are locked, we can delete them
   for (size_t i = 0; i < starts.size(); ++i) {
+    std::cout << starts[i] << ' ' << ends[i] << "\n";
     cf_it->Seek(starts[i]);
     while (cf_it->Valid()) {
+      std::cout << "Deleting from column; Key: " << cf_it->key().ToString() << '\n';
       if (cf_it->key().ToString() > ends[i]) {
         break;
       }
@@ -1888,9 +1894,10 @@ Status PersistentRowTransaction::DeleteFromColumn(
             "Failed to delete from column: " + status.ToString(),
             GCP_ERROR_INFO());
       }
+      cf_it->Next();
     }
   }
-
+  std::cout << "F\n";
   return Status();
 }
 
