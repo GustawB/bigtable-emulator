@@ -272,6 +272,10 @@ class ColumnFamily {
   // Support for aggregate and other complex types.
   absl::optional<google::bigtable::admin::v2::Type> value_type_ = absl::nullopt;
 
+  static Status ChooseCellUpdateFunction(
+      google::bigtable::admin::v2::Type value_type,
+      std::shared_ptr<ColumnFamily> const& cf);
+
   static StatusOr<std::string> DefaultUpdateCell(
       std::string const& /*existing_value*/, std::string&& new_value) {
     return new_value;
@@ -475,9 +479,7 @@ class InMemoryColumnFamily : public ColumnFamily {
     return rows_.erase(row_it);
   }
 
-  void RemoveAllDataFromColumnFamily() {
-      rows_.clear();
-  };
+  void RemoveAllDataFromColumnFamily() { rows_.clear(); };
 
   std::unique_ptr<AbstractCellStreamImpl> GetFilteredColumnFamilyStream(
       std::shared_ptr<StringRangeSet const> row_set,
@@ -512,7 +514,7 @@ class PersistentColumnFamily : public ColumnFamily {
     value_type_ = std::move(other.value_type_);
   }
 
-    bool RowKeyExists(std::string const& row_key) override;
+  bool RowKeyExists(std::string const& row_key) override;
 
   rocksdb::ColumnFamilyHandle* GetRaw() const { return handle_.get(); }
 
@@ -527,7 +529,7 @@ class PersistentColumnFamily : public ColumnFamily {
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
   static StatusOr<std::shared_ptr<PersistentColumnFamily>>
-  ConstructAggregateColumnFamily(google::bigtable::admin::v2::Type value_type,
+  ConstructAggregateColumnFamily(const google::bigtable::admin::v2::Type& value_type,
                                  std::shared_ptr<rocksdb::TransactionDB> db_,
                                  std::string const& name);
 

@@ -42,7 +42,7 @@ Status HasCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
                std::string const& column_qualifier, int64_t timestamp_micros,
                std::string const& value) {
   auto utilities =
-      std::static_pointer_cast<InMemoryTableUtilities>(table->GetUtilities());
+      std::static_pointer_cast<InMemoryTableOperations>(table->GetUtilities());
   auto column_family_it = utilities->find(column_family);
   if (column_family_it == utilities->end()) {
     return NotFoundError(

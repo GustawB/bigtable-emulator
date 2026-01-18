@@ -39,8 +39,7 @@ class KeyCoder {
  private:
   static void AppendEscaped(std::string& dest, std::string const& src);
 
-  static StatusOr<std::string> ConsumeField(std::string_view src,
-                                            size_t& pos);
+  static StatusOr<std::string> ConsumeField(std::string_view src, size_t& pos);
 };
 
 }  // namespace emulator

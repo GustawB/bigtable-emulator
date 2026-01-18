@@ -228,6 +228,38 @@ absl::optional<Cell> ColumnFamilyRow::DeleteTimeStamp(
   return ret;
 }
 
+Status ColumnFamily::ChooseCellUpdateFunction(
+    google::bigtable::admin::v2::Type value_type,
+    std::shared_ptr<ColumnFamily> const& cf) {
+  if (value_type.has_aggregate_type()) {
+    auto const& aggregate_type = value_type.aggregate_type();
+    switch (aggregate_type.aggregator_case()) {
+      case google::bigtable::admin::v2::Type::Aggregate::kSum:
+        cf->update_cell_ = cf->SumUpdateCellBEInt64;
+        break;
+      case google::bigtable::admin::v2::Type::Aggregate::kMin:
+        cf->update_cell_ = cf->MinUpdateCellBEInt64;
+        break;
+      case google::bigtable::admin::v2::Type::Aggregate::kMax:
+        cf->update_cell_ = cf->MaxUpdateCellBEInt64;
+        break;
+      default:
+        return InvalidArgumentError(
+            "unsupported aggregation type",
+            GCP_ERROR_INFO().WithMetadata(
+                "aggregation case",
+                absl::StrFormat("%d", aggregate_type.aggregator_case())));
+    }
+    cf->value_type_ = std::move(value_type);
+    return Status();
+  }
+
+  return InvalidArgumentError(
+      "no aggregate type set in the supplied value_type",
+      GCP_ERROR_INFO().WithMetadata("supplied value type",
+                                    value_type.DebugString()));
+}
+
 absl::optional<std::string> InMemoryColumnFamily::SetCell(
     std::string const& row_key, std::string const& column_qualifier,
     std::chrono::milliseconds timestamp, std::string const& value) {
@@ -489,13 +521,6 @@ bool FilteredPersistentColumnFamilyStream::HasValue() const {
 
 CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
-  if (!cur_value_) {
-    curr_value_string_ = it_->value().ToString();
-    cur_value_ = CellView(
-        curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
-        std::chrono::milliseconds(curr_decoded_key_.timestamp),
-        curr_value_string_);
-  }
   return cur_value_.value();
 }
 
@@ -506,7 +531,8 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
     it_->Next();
   } else if (mode == NextMode::kColumn) {
     while (it_->Valid()) {
-      auto maybe_decoded = KeyCoder::Decode(std::string_view(it_->key().data(), it_->key().size()));
+      auto maybe_decoded = KeyCoder::Decode(
+          std::string_view(it_->key().data(), it_->key().size()));
       if (!maybe_decoded.ok()) {
         return false;
       }
@@ -522,11 +548,16 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   }
 
   if (it_->Valid()) {
-    auto maybe_decoded = KeyCoder::Decode(std::string_view(it_->key().data(), it_->key().size()));
+    auto maybe_decoded = KeyCoder::Decode(
+        std::string_view(it_->key().data(), it_->key().size()));
     if (!maybe_decoded.ok()) {
       return false;
     }
     curr_decoded_key_ = maybe_decoded.value();
+    cur_value_ = CellView(
+        curr_decoded_key_.row, column_family_name_, curr_decoded_key_.col,
+        std::chrono::milliseconds(curr_decoded_key_.timestamp),
+        curr_value_string_);
   }
   return true;
 }
@@ -552,41 +583,16 @@ StatusOr<std::shared_ptr<InMemoryColumnFamily>>
 InMemoryColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type value_type) {
   auto cf = std::make_shared<InMemoryColumnFamily>();
-
-  if (value_type.has_aggregate_type()) {
-    auto const& aggregate_type = value_type.aggregate_type();
-    switch (aggregate_type.aggregator_case()) {
-      case google::bigtable::admin::v2::Type::Aggregate::kSum:
-        cf->update_cell_ = cf->SumUpdateCellBEInt64;
-        break;
-      case google::bigtable::admin::v2::Type::Aggregate::kMin:
-        cf->update_cell_ = cf->MinUpdateCellBEInt64;
-        break;
-      case google::bigtable::admin::v2::Type::Aggregate::kMax:
-        cf->update_cell_ = cf->MaxUpdateCellBEInt64;
-        break;
-      default:
-        return InvalidArgumentError(
-            "unsupported aggregation type",
-            GCP_ERROR_INFO().WithMetadata(
-                "aggregation case",
-                absl::StrFormat("%d", aggregate_type.aggregator_case())));
-    }
-
-    cf->value_type_ = std::move(value_type);
-
-    return cf;
+  auto status = ChooseCellUpdateFunction(std::move(value_type), cf);
+  if (!status.ok()) {
+    return status;
   }
-
-  return InvalidArgumentError(
-      "no aggregate type set in the supplied value_type",
-      GCP_ERROR_INFO().WithMetadata("supplied value type",
-                                    value_type.DebugString()));
+  return cf;
 }
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::ConstructAggregateColumnFamily(
-    google::bigtable::admin::v2::Type value_type,
+    const google::bigtable::admin::v2::Type& value_type,
     std::shared_ptr<rocksdb::TransactionDB> db_, std::string const& name) {
   rocksdb::ColumnFamilyOptions opts;
   auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
@@ -599,35 +605,11 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
   }
 
   auto cf = maybe_cf.value();
-
-  if (value_type.has_aggregate_type()) {
-    auto const& aggregate_type = value_type.aggregate_type();
-    switch (aggregate_type.aggregator_case()) {
-      case google::bigtable::admin::v2::Type::Aggregate::kSum:
-        cf->update_cell_ = cf->SumUpdateCellBEInt64;
-        break;
-      case google::bigtable::admin::v2::Type::Aggregate::kMin:
-        cf->update_cell_ = cf->MinUpdateCellBEInt64;
-        break;
-      case google::bigtable::admin::v2::Type::Aggregate::kMax:
-        cf->update_cell_ = cf->MaxUpdateCellBEInt64;
-        break;
-      default:
-        return InvalidArgumentError(
-            "unsupported aggregation type",
-            GCP_ERROR_INFO().WithMetadata(
-                "aggregation case",
-                absl::StrFormat("%d", aggregate_type.aggregator_case())));
-    }
-
-    cf->value_type_ = std::move(value_type);
-    return cf;
+  Status status = ChooseCellUpdateFunction(value_type, cf);
+  if (!status.ok()) {
+    return status;
   }
-
-  return InvalidArgumentError(
-      "no aggregate type set in the supplied value_type",
-      GCP_ERROR_INFO().WithMetadata("supplied value type",
-                                    value_type.DebugString()));
+  return cf;
 }
 
 google::cloud::Status PersistentColumnFamily::ConfigureFromValueType(
@@ -672,26 +654,26 @@ PersistentColumnFamily::OpenExisting(
   return cf;
 }
 
-  bool PersistentColumnFamily::RowKeyExists(std::string const &row_key) {
-    auto it = std::unique_ptr<rocksdb::Iterator>(
-        db_->NewIterator(rocksdb::ReadOptions(), handle_.get()));
+bool PersistentColumnFamily::RowKeyExists(std::string const& row_key) {
+  auto it = std::unique_ptr<rocksdb::Iterator>(
+      db_->NewIterator(rocksdb::ReadOptions(), handle_.get()));
 
-    it->Seek(row_key);
-    if (!it->Valid()) {
-      return false;
-    }
-
-    auto value = it->value();
-    auto res = KeyCoder::Decode(value.ToString());
-    if (!res.ok()) {
-      return false;
-    }
-
-    if (res.value().row == row_key) {
-      return true;
-    }
+  it->Seek(row_key);
+  if (!it->Valid()) {
     return false;
   }
+
+  auto value = it->value();
+  auto res = KeyCoder::Decode(value.ToString());
+  if (!res.ok()) {
+    return false;
+  }
+
+  if (res.value().row == row_key) {
+    return true;
+  }
+  return false;
+}
 
 }  // namespace emulator
 }  // namespace bigtable
