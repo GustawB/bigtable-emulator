@@ -551,8 +551,8 @@ Status PersistentTableOperations::DropRowRange(
   std::string range_end = row_key_prefix + "\xFF";
   auto txn = std::unique_ptr<rocksdb::Transaction>(
       db_->BeginTransaction(rocksdb::WriteOptions()));
-  rocksdb::Endpoint start(row_key_prefix, true);
-  rocksdb::Endpoint end(row_key_prefix + "\xFF", true);
+  rocksdb::Endpoint start(row_key_prefix, false);
+  rocksdb::Endpoint end(row_key_prefix + "\xFF", false);
   rocksdb::Status status;
 
   // 1. Lock the specified range in every column family
@@ -1745,10 +1745,11 @@ Status PersistentRowTransaction::AddToCell(
 
   rocksdb::ColumnFamilyHandle* raw_cf = cf->GetRaw();
 
-  std::string partial_key = KeyCoder::PartialEncode(
+  std::string start_key = KeyCoder::PartialEncode(
       row_key_, add_to_cell.column_qualifier().raw_value());
-  rocksdb::Endpoint start(partial_key, true);
-  rocksdb::Endpoint end(partial_key + "\xFF", true);
+  std::string end_key = start_key + "\xFF";
+  rocksdb::Endpoint start(start_key, false);
+  rocksdb::Endpoint end(end_key, false);
 
   /**
    * This will lock a range [partial_key; partial_key + 0xFF]; because of the
@@ -1764,9 +1765,9 @@ Status PersistentRowTransaction::AddToCell(
   }
 
   rocksdb::Iterator* it = txn_->GetIterator(rocksdb::ReadOptions(), raw_cf);
-  it->Seek(partial_key);
+  it->Seek(start_key);
   std::string new_value = value;
-  if (it->Valid() && it->key().starts_with(partial_key)) {
+  if (it->Valid() && it->key().starts_with(start_key)) {
     auto maybe_result =
         cf->update_cell_(it->value().ToString(), std::move(value));
     if (!maybe_result) {
@@ -1785,7 +1786,7 @@ Status PersistentRowTransaction::AddToCell(
         "Failed to add to cell: " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
   }
-  if (it->Valid() && it->key().starts_with(partial_key) &&
+  if (it->Valid() && it->key().starts_with(start_key) &&
       it->key() != new_key) {
     status = txn_->Delete(raw_cf, it->key());
     if (!status.ok()) {
@@ -1801,13 +1802,11 @@ Status PersistentRowTransaction::AddToCell(
 Status PersistentRowTransaction::DeleteFromColumn(
     ::google::bigtable::v2::Mutation_DeleteFromColumn const&
         delete_from_column) {
-  std::cout << "A\n";
   auto maybe_column_family = utilities_->FindColumnFamily(delete_from_column);
   if (!maybe_column_family.ok()) {
     return maybe_column_family.status();
   }
 
-  std::cout << "B\n";
   // We need to check if the given timerange is empty or reversed, but
   // only up to the server's time accuracy (in our case, milliseconds)
   // - For example a time range of [1000, 1200] would be empty.
@@ -1836,7 +1835,6 @@ Status PersistentRowTransaction::DeleteFromColumn(
     start_count = start.count();
     end_count = end.count();
   }
-  std::cout << "C\n";
 
   // The idea here is to iterate over each row, and for each row
   // lock the specified col+timestamp range
@@ -1863,8 +1861,8 @@ Status PersistentRowTransaction::DeleteFromColumn(
         decoded.row, delete_from_column.column_qualifier(), start_count);
     auto end_key = KeyCoder::Encode(
         decoded.row, delete_from_column.column_qualifier(), end_count);
-    rocksdb::Endpoint start(start_key, true);
-    rocksdb::Endpoint end(end_key, true);
+    rocksdb::Endpoint start(start_key, false);
+    rocksdb::Endpoint end(end_key, false);
     rocksdb::Status status =
         txn_->GetRangeLock(column_family->GetRaw(), start, end);
     if (!status.ok()) {
@@ -1878,10 +1876,8 @@ Status PersistentRowTransaction::DeleteFromColumn(
   }
   cf_it->Refresh();
 
-  std::cout << "D\n";
   // 2. Now that things to delete are locked, we can delete them
   for (size_t i = 0; i < starts.size(); ++i) {
-    std::cout << starts[i] << ' ' << ends[i] << "\n";
     cf_it->Seek(starts[i]);
     while (cf_it->Valid()) {
       std::cout << "Deleting from column; Key: " << cf_it->key().ToString() << '\n';
@@ -1897,7 +1893,6 @@ Status PersistentRowTransaction::DeleteFromColumn(
       cf_it->Next();
     }
   }
-  std::cout << "F\n";
   return Status();
 }
 
@@ -1945,8 +1940,8 @@ PersistentRowTransaction::ReadModifyWriteRow(
         KeyCoder::PartialEncode(request.row_key(), rule.column_qualifier());
 
     // 1. Lock the key range
-    rocksdb::Endpoint start(partial_key, true);
-    rocksdb::Endpoint end(partial_key + "\xFF", true);
+    rocksdb::Endpoint start(partial_key, false);
+    rocksdb::Endpoint end(partial_key + "\xFF", false);
     rocksdb::Status status =
         txn_->GetRangeLock(column_family->GetRaw(), start, end);
     if (!status.ok()) {

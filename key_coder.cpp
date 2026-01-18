@@ -26,13 +26,12 @@ std::string KeyCoder::Encode(std::string const& row, std::string const& col,
 std::string KeyCoder::PartialEncode(std::string const& row,
                                std::string const& col) {
     std::string buffer;
-    buffer.reserve(row.size() + col.size() + 16);
+    //buffer.reserve(row.size() + col.size() + 16);
 
     AppendEscaped(buffer, row);
     buffer.append("\x00\x01", 2);
 
     AppendEscaped(buffer, col);
-    buffer.append("\x00\x01", 2);
 
     return buffer;
 }
