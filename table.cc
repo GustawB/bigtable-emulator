@@ -1916,6 +1916,7 @@ PersistentRowTransaction::ReadModifyWriteRow(
         "row key not set",
         GCP_ERROR_INFO().WithMetadata("request", request.DebugString()));
   }
+  std::cout << "Processing ReadModifyWriteRow request\n";
 
   // Copying behaviour from the InMemoryRowTransaction.
   // In this case, InMemoryColumnFamily is a perfect storage
@@ -1924,21 +1925,22 @@ PersistentRowTransaction::ReadModifyWriteRow(
   std::map<std::string, InMemoryColumnFamily> tmp_families;
 
   for (auto const& rule : request.rules()) {
+    std::cout << "A\n";
     auto maybe_column_family = utilities_->FindColumnFamily(rule);
     if (!maybe_column_family) {
       return maybe_column_family.status();
     }
-
+    std::cout << "B\n";
     if (!rule.has_increment_amount() && !rule.has_append_value()) {
       return InvalidArgumentError(
           "either append value or increment amount must be set",
           GCP_ERROR_INFO().WithMetadata("rule", rule.DebugString()));
     }
 
-    auto column_family = maybe_column_family.value();
+    const auto& column_family = maybe_column_family.value();
     std::string partial_key =
         KeyCoder::PartialEncode(request.row_key(), rule.column_qualifier());
-
+    std::cout << "C\n";
     // 1. Lock the key range
     rocksdb::Endpoint start(partial_key, false);
     rocksdb::Endpoint end(partial_key + "\xFF", false);
@@ -1949,24 +1951,36 @@ PersistentRowTransaction::ReadModifyWriteRow(
           "Failed to read modify row: " + status.ToString(),
           GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
     }
-
+    std::cout << "D\n";
     // 2. Acquire iterator to the first value in range (if exists)
     auto cf_it =
         std::unique_ptr<rocksdb::Iterator>(utilities_->db_->NewIterator(
             rocksdb::ReadOptions(), column_family->GetRaw()));
     cf_it->Seek(partial_key);
 
+    std::cout << "E\n";
     // 3. Main logic
     uint64_t system_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::system_clock::now().time_since_epoch())
                             .count();
     if (!cf_it->Valid()) {
+      std::string value;
+      if (rule.has_append_value()) {
+        value = rule.append_value();
+      } else {
+        value = google::cloud::internal::EncodeBigEndian(rule.increment_amount());
+      }
       txn_->Put(column_family->GetRaw(),
                 KeyCoder::Encode(request.row_key(), rule.column_qualifier(),
-                                 system_ms),
-                rule.append_value());
+                                 system_ms), value);
+
+      auto result_timestamp = std::chrono::milliseconds(system_ms);
+      tmp_families[rule.family_name()].SetCell(
+        request.row_key(), rule.column_qualifier(), result_timestamp,
+        std::move(value));
       continue;
     }
+    std::cout << "F\n";
 
     auto maybe_decoded = KeyCoder::Decode(
         std::string_view(cf_it->key().data(), cf_it->key().size()));
@@ -1978,6 +1992,7 @@ PersistentRowTransaction::ReadModifyWriteRow(
     auto const& decoded_key = maybe_decoded.value();
     if (decoded_key.row != request.row_key() ||
         decoded_key.col != rule.column_qualifier()) {
+
       txn_->Put(column_family->GetRaw(),
                 KeyCoder::Encode(request.row_key(), rule.column_qualifier(),
                                  system_ms),
@@ -1996,8 +2011,10 @@ PersistentRowTransaction::ReadModifyWriteRow(
 
     std::string value;
     if (rule.has_append_value()) {
+      std::cout << "Procesing append rule with append value: " << rule.append_value() << '\n';
       value = prev_value + rule.append_value();
     } else {  // has increment value
+      std::cout << "Procesing increment rule with increment amount: " << rule.increment_amount() << '\n';
       auto maybe_prev_value_int =
           google::cloud::internal::DecodeBigEndian<std::int64_t>(prev_value);
       if (!maybe_prev_value_int) {
