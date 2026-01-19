@@ -529,9 +529,9 @@ class PersistentColumnFamily : public ColumnFamily {
   rocksdb::ColumnFamilyHandle* ToRawPtr() const { return handle_.get(); }
   std::shared_ptr<rocksdb::ColumnFamilyHandle> GetHandle() { return handle_; };
   static StatusOr<std::shared_ptr<PersistentColumnFamily>>
-  ConstructAggregateColumnFamily(const google::bigtable::admin::v2::Type& value_type,
-                                 std::shared_ptr<rocksdb::TransactionDB> db_,
-                                 std::string const& name);
+  ConstructAggregateColumnFamily(
+      google::bigtable::admin::v2::Type const& value_type,
+      std::shared_ptr<rocksdb::TransactionDB> db_, std::string const& name);
 
   /**
    * Drop the underlying column family handle.

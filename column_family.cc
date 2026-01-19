@@ -519,7 +519,7 @@ bool FilteredPersistentColumnFamilyStream::HasValue() const {
   return it_->Valid();
 }
 
-  CellView const& FilteredPersistentColumnFamilyStream::Value() const {
+CellView const& FilteredPersistentColumnFamilyStream::Value() const {
   InitializeIfNeeded();
   if (!cur_value_) {
     cur_value_ = CellView(
@@ -596,7 +596,7 @@ InMemoryColumnFamily::ConstructAggregateColumnFamily(
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::ConstructAggregateColumnFamily(
-    const google::bigtable::admin::v2::Type& value_type,
+    google::bigtable::admin::v2::Type const& value_type,
     std::shared_ptr<rocksdb::TransactionDB> db_, std::string const& name) {
   rocksdb::ColumnFamilyOptions opts;
   auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);

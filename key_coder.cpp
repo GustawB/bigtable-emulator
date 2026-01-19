@@ -9,13 +9,11 @@ namespace emulator {
 std::string KeyCoder::Encode(std::string const& row, std::string const& col,
                             uint64_t timestamp) {
     std::string buffer;
-    buffer.reserve(row.size() + col.size() + 16);
-
     AppendEscaped(buffer, row);
-    buffer.append("\x00\x01", 2);
+    buffer.append({separator_, end_esc_});
 
     AppendEscaped(buffer, col);
-    buffer.append("\x00\x01", 2);
+    buffer.append({separator_, end_esc_});
 
     std::string encoded_ts = absl::StrFormat("%016x", ~timestamp);
     buffer.append(encoded_ts);
@@ -26,10 +24,8 @@ std::string KeyCoder::Encode(std::string const& row, std::string const& col,
 std::string KeyCoder::PartialEncode(std::string const& row,
                                std::string const& col) {
     std::string buffer;
-    //buffer.reserve(row.size() + col.size() + 16);
-
     AppendEscaped(buffer, row);
-    buffer.append("\x00\x01", 2);
+    buffer.append({separator_, end_esc_});
 
     AppendEscaped(buffer, col);
 
@@ -80,7 +76,7 @@ void KeyCoder::AppendEscaped(std::string& dest, std::string const& src) {
         }
 
         dest.append(src.data() + pos, zero_idx - pos);
-        dest.append("\x00\xFF", 2);
+        dest.append({separator_, existing_esc_});
         pos = zero_idx + 1;
     }
 }
@@ -100,10 +96,10 @@ StatusOr<std::string> KeyCoder::ConsumeField(std::string_view src,
             return InternalError("Failed to decode key",
                                  GCP_ERROR_INFO().WithMetadata("key_left", src));
         char next_byte = src[zero_idx + 1];
-        if (next_byte == '\xFF') {
+        if (next_byte == existing_esc_) {
             res.push_back('\0');
             pos = zero_idx + 2;
-        } else if (next_byte == '\x01') {
+        } else if (next_byte == end_esc_) {
             pos = zero_idx + 2;
             return res;
         } else {
