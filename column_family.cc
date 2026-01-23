@@ -667,8 +667,8 @@ bool PersistentColumnFamily::RowKeyExists(std::string const& row_key) {
     return false;
   }
 
-  auto value = it->value();
-  auto res = KeyCoder::Decode(value.ToString());
+  auto key = it->key();
+  auto res = KeyCoder::Decode(key.ToString());
   if (!res.ok()) {
     return false;
   }
