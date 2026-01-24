@@ -443,8 +443,6 @@ InMemoryTableOperations::ModifyColumnFamilies(
 
 StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
     std::string const& data_root, google::bigtable::admin::v2::Table& schema) {
-  bool const create_if_missing = true;
-
   std::string rel = schema.name();
   if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
   std::filesystem::path db_path = std::filesystem::path(data_root) / rel;
@@ -463,7 +461,7 @@ StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
   rocksdb::TransactionDBOptions txn_options;
   txn_options.lock_mgr_handle.reset(rocksdb::NewRangeLockManager(nullptr));
 
-  options.create_if_missing = create_if_missing;
+  options.create_if_missing = true;
   options.create_missing_column_families = false;
 
   std::vector<std::string> cf_names;
@@ -539,7 +537,6 @@ StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
       res->column_families_.emplace(cfd.first, new_cf.value());
       handles_by_name[cfd.first] = new_cf.value()->GetHandle();
     } else {
-      // TODO: handle opts
       rocksdb::ColumnFamilyOptions opts;
       auto maybe_new_cf =
           PersistentColumnFamily::Create(res->db_, opts, cfd.first);
@@ -671,6 +668,7 @@ PersistentTableOperations::OpenExisting(
       res->column_families_.emplace(cfd.first, new_cf.value());
       handles_by_name[cfd.first] = new_cf.value()->GetHandle();
     } else {
+      // TODO: handle ops
       rocksdb::ColumnFamilyOptions opts;
       auto maybe_new_cf =
           PersistentColumnFamily::Create(res->db_, opts, cfd.first);
