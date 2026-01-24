@@ -20,6 +20,7 @@
 #include "rocksdb/db.h"
 #include "table.h"
 #include <google/bigtable/admin/v2/table.pb.h>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -108,6 +109,8 @@ class Cluster {
   StatusOr<std::shared_ptr<Table>> FindTable(std::string const& table_name);
 
  private:
+  void BootstrapTablesFromDisk();
+
   mutable std::mutex mu_;
 
   /**

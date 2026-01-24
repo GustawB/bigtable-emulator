@@ -71,10 +71,6 @@ class TableOperations {
  public:
   virtual ~TableOperations() = default;
 
-  static StatusOr<std::shared_ptr<TableOperations>> Create(
-      google::bigtable::admin::v2::Table& schema, bool should_persist,
-      std::string const& data_root, bool allow_bootstrap_schema);
-
   virtual std::unique_ptr<RowTransaction> NewRowTransaction(
       std::string const& row_key) = 0;
 
@@ -176,9 +172,11 @@ class PersistentTableOperations
     : public TableOperations,
       public std::enable_shared_from_this<PersistentTableOperations> {
  public:
-  static StatusOr<std::shared_ptr<TableOperations>> Create(
-      std::string const& data_root, google::bigtable::admin::v2::Table& schema,
-      bool allow_bootstrap_schema);
+  static StatusOr<std::shared_ptr<TableOperations>> CreateNew(
+      std::string const& data_root, google::bigtable::admin::v2::Table& schema);
+
+  static StatusOr<std::shared_ptr<TableOperations>> OpenExisting(
+      std::string const& data_root, google::bigtable::admin::v2::Table& schema);
 
   std::unique_ptr<RowTransaction> NewRowTransaction(
       std::string const& row_key) override;
@@ -213,6 +211,9 @@ class PersistentTableOperations
   friend PersistentRowTransaction;
 
  private:
+  Status ReconcileColumnFamiliesToTarget(
+      ::google::bigtable::admin::v2::Table const& target_schema);
+
   std::string table_name_;
   /**
    * To close a rocksdb database, in the simplest case it is enough to delete a
@@ -232,8 +233,7 @@ class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       google::bigtable::admin::v2::Table schema, bool should_persist,
-      std::string const& data_root = "/root/",
-      bool allow_bootstrap_schema = true);
+      std::string const& data_root = "/root/");
 
   static StatusOr<std::shared_ptr<Table>> Load(
       std::string const& table_name, std::string const& data_root = "/root/");
@@ -288,6 +288,7 @@ class Table : public std::enable_shared_from_this<Table> {
   friend class RowTransaction;
   friend class InMemoryRowTransaction;
   friend class PersistentRowTransaction;
+  enum class OpenMode { kCreateNew, kOpenExisting };
 
   Status PrepareSchema();
 
@@ -296,7 +297,7 @@ class Table : public std::enable_shared_from_this<Table> {
 
   Status Construct(google::bigtable::admin::v2::Table schema,
                    bool should_persist, std::string const& data_root,
-                   bool allow_bootstrap_schema);
+                   OpenMode mode);
 
   bool IsDeleteProtectedNoLock() const;
 
