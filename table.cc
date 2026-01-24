@@ -195,22 +195,22 @@ constexpr char kSchemaKey[] = "t_emulator:meta:schema_pb";
 
 namespace btadmin = ::google::bigtable::admin::v2;
 
-StatusOr<std::shared_ptr<TableUtilities>> TableUtilities::Create(
+StatusOr<std::shared_ptr<TableOperations>> TableOperations::Create(
     google::bigtable::admin::v2::Table& schema, bool should_persist,
     std::string const& data_root, bool allow_bootstrap_schema) {
-  StatusOr<std::shared_ptr<TableUtilities>> maybe_utilities;
+  StatusOr<std::shared_ptr<TableOperations>> maybe_utilities;
   if (!should_persist) {
-    maybe_utilities = InMemoryTableUtilities::Create(schema);
+    maybe_utilities = InMemoryTableOperations::Create(schema);
   } else {
-    maybe_utilities = PersistentTableUtilities::Create(data_root, schema,
-                                                       allow_bootstrap_schema);
+    maybe_utilities = PersistentTableOperations::Create(data_root, schema,
+                                                        allow_bootstrap_schema);
   }
   return maybe_utilities;
 }
 
-StatusOr<std::shared_ptr<TableUtilities>> InMemoryTableUtilities::Create(
+StatusOr<std::shared_ptr<TableOperations>> InMemoryTableOperations::Create(
     google::bigtable::admin::v2::Table const& schema) {
-  auto res = std::make_shared<InMemoryTableUtilities>();
+  auto res = std::make_shared<InMemoryTableOperations>();
   for (auto const& column_family_def : schema.column_families()) {
     absl::optional<google::bigtable::admin::v2::Type> opt_value_type =
         absl::nullopt;
@@ -232,15 +232,15 @@ StatusOr<std::shared_ptr<TableUtilities>> InMemoryTableUtilities::Create(
                                     std::make_shared<InMemoryColumnFamily>());
     }
   }
-  return std::shared_ptr<TableUtilities>(res);
+  return std::shared_ptr<TableOperations>(res);
 }
 
-std::unique_ptr<RowTransaction> InMemoryTableUtilities::NewRowTransaction(
+std::unique_ptr<RowTransaction> InMemoryTableOperations::NewRowTransaction(
     std::string const& row_key) {
   return std::make_unique<InMemoryRowTransaction>(this->get(), row_key);
 }
 
-StatusOr<CellStream> InMemoryTableUtilities::CreateCellStream(
+StatusOr<CellStream> InMemoryTableOperations::CreateCellStream(
     std::shared_ptr<StringRangeSet> range_set,
     absl::optional<google::bigtable::v2::RowFilter> maybe_row_filter) const {
   auto table_stream_ctor = [range_set = std::move(range_set), this] {
@@ -263,7 +263,7 @@ StatusOr<CellStream> InMemoryTableUtilities::CreateCellStream(
 }
 
 StatusOr<google::bigtable::admin::v2::Table>
-InMemoryTableUtilities::ModifyColumnFamilies(
+InMemoryTableOperations::ModifyColumnFamilies(
     google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
     google::bigtable::admin::v2::Table schema) {
   auto new_column_families = column_families_;
@@ -370,7 +370,7 @@ InMemoryTableUtilities::ModifyColumnFamilies(
   return schema;
 }
 
-StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
+StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::Create(
     std::string const& data_root, google::bigtable::admin::v2::Table& schema,
     bool allow_bootstrap_schema) {
   std::string rel = schema.name();
@@ -436,7 +436,7 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
         GCP_ERROR_INFO().WithMetadata("path", db_path.string()));
   }
 
-  std::shared_ptr<PersistentTableUtilities> res(new PersistentTableUtilities);
+  std::shared_ptr<PersistentTableOperations> res(new PersistentTableOperations);
   res->db_.reset(raw_db);
   res->table_name_ = schema.name();
 
@@ -498,16 +498,16 @@ StatusOr<std::shared_ptr<TableUtilities>> PersistentTableUtilities::Create(
     }
   }
 
-  return StatusOr<std::shared_ptr<TableUtilities>>(std::move(res));
+  return StatusOr<std::shared_ptr<TableOperations>>(std::move(res));
 }
 
-std::unique_ptr<RowTransaction> PersistentTableUtilities::NewRowTransaction(
+std::unique_ptr<RowTransaction> PersistentTableOperations::NewRowTransaction(
     std::string const& row_key) {
   return std::make_unique<PersistentRowTransaction>(this->get(), row_key,
                                                     db_.get());
 }
 
-StatusOr<CellStream> PersistentTableUtilities::CreateCellStream(
+StatusOr<CellStream> PersistentTableOperations::CreateCellStream(
     std::shared_ptr<StringRangeSet> range_set,
     absl::optional<google::bigtable::v2::RowFilter>) const {
   auto table_stream_ctor = [range_set = std::move(range_set), this] {
@@ -525,7 +525,7 @@ StatusOr<CellStream> PersistentTableUtilities::CreateCellStream(
   return table_stream_ctor();
 }
 
-StatusOr<std::size_t> PersistentTableUtilities::GetRowCountEstimate() {
+StatusOr<std::size_t> PersistentTableOperations::GetRowCountEstimate() {
   // Just iterate all rows and count them.
   auto all_rows_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
   auto maybe_all_rows_stream = CreateCellStream(all_rows_set, absl::nullopt);
@@ -542,17 +542,17 @@ StatusOr<std::size_t> PersistentTableUtilities::GetRowCountEstimate() {
   return res;
 }
 
-Status PersistentTableUtilities::RemoveAllDataFromColumnFamilies() {
+Status PersistentTableOperations::RemoveAllDataFromColumnFamilies() {
   return DropRowRange("\x00");
 }
 
-Status PersistentTableUtilities::DropRowRange(
+Status PersistentTableOperations::DropRowRange(
     std::string const& row_key_prefix) {
   std::string range_end = row_key_prefix + "\xFF";
   auto txn = std::unique_ptr<rocksdb::Transaction>(
       db_->BeginTransaction(rocksdb::WriteOptions()));
-  rocksdb::Endpoint start(row_key_prefix, true);
-  rocksdb::Endpoint end(row_key_prefix + "\xFF", true);
+  rocksdb::Endpoint start(row_key_prefix, false);
+  rocksdb::Endpoint end(row_key_prefix + "\xFF", false);
   rocksdb::Status status;
 
   // 1. Lock the specified range in every column family
@@ -593,7 +593,7 @@ Status PersistentTableUtilities::DropRowRange(
 }
 
 StatusOr<google::bigtable::admin::v2::Table>
-PersistentTableUtilities::ModifyColumnFamilies(
+PersistentTableOperations::ModifyColumnFamilies(
     google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
     google::bigtable::admin::v2::Table schema) {
   auto new_handles = column_families_;
@@ -774,7 +774,7 @@ PersistentTableUtilities::ModifyColumnFamilies(
   return schema;
 }
 
-Status PersistentTableUtilities::PersistSchema(
+Status PersistentTableOperations::PersistSchema(
     google::bigtable::admin::v2::Table const& schema) {
   std::string bytes;
   if (!schema.SerializeToString(&bytes)) {
@@ -797,7 +797,7 @@ Status PersistentTableUtilities::PersistSchema(
 }
 
 StatusOr<google::bigtable::admin::v2::Table>
-PersistentTableUtilities::LoadSchema() const {
+PersistentTableOperations::LoadSchema() const {
   std::string serialized;
 
   rocksdb::ReadOptions ro;
@@ -1006,7 +1006,7 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema,
   Status parse_result = PrepareSchema();
   if (!parse_result.ok()) return parse_result;
 
-  auto maybe_utilities = TableUtilities::Create(
+  auto maybe_utilities = TableOperations::Create(
       schema_, should_persist, data_root, allow_bootstrap_schema);
   if (!maybe_utilities.ok()) return maybe_utilities.status();
   utilities_ = maybe_utilities.value();
@@ -1335,7 +1335,6 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
     row_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
   }
   std::lock_guard<std::mutex> lock(mu_);
-
   StatusOr<CellStream> maybe_stream;
   if (request.has_filter()) {
     maybe_stream =
@@ -1350,7 +1349,6 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
 
   std::int64_t rows_count = 0;
   absl::optional<std::string> current_row_key;
-
   CellStream& stream = *maybe_stream;
   for (; stream; ++stream) {
     std::cout << "Row: " << stream->row_key()
@@ -1360,7 +1358,6 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
               << " column_value: " << stream->value() << " label: "
               << (stream->HasLabel() ? stream->label() : std::string("unset"))
               << std::endl;
-
     if (request.rows_limit() > 0) {
       if (!current_row_key.has_value() ||
           stream->row_key() != current_row_key.value()) {
@@ -1748,10 +1745,11 @@ Status PersistentRowTransaction::AddToCell(
 
   rocksdb::ColumnFamilyHandle* raw_cf = cf->GetRaw();
 
-  std::string partial_key = KeyCoder::PartialEncode(
+  std::string start_key = KeyCoder::PartialEncode(
       row_key_, add_to_cell.column_qualifier().raw_value());
-  rocksdb::Endpoint start(partial_key, true);
-  rocksdb::Endpoint end(partial_key + "\xFF", true);
+  std::string end_key = start_key + "\xFF";
+  rocksdb::Endpoint start(start_key, false);
+  rocksdb::Endpoint end(end_key, false);
 
   /**
    * This will lock a range [partial_key; partial_key + 0xFF]; because of the
@@ -1767,9 +1765,9 @@ Status PersistentRowTransaction::AddToCell(
   }
 
   rocksdb::Iterator* it = txn_->GetIterator(rocksdb::ReadOptions(), raw_cf);
-  it->Seek(partial_key);
+  it->Seek(start_key);
   std::string new_value = value;
-  if (it->Valid() && it->key().starts_with(partial_key)) {
+  if (it->Valid() && it->key().starts_with(start_key)) {
     auto maybe_result =
         cf->update_cell_(it->value().ToString(), std::move(value));
     if (!maybe_result) {
@@ -1788,8 +1786,7 @@ Status PersistentRowTransaction::AddToCell(
         "Failed to add to cell: " + status.ToString(),
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
   }
-  if (it->Valid() && it->key().starts_with(partial_key) &&
-      it->key() != new_key) {
+  if (it->Valid() && it->key().starts_with(start_key) && it->key() != new_key) {
     status = txn_->Delete(raw_cf, it->key());
     if (!status.ok()) {
       return InternalError(
@@ -1804,8 +1801,99 @@ Status PersistentRowTransaction::AddToCell(
 Status PersistentRowTransaction::DeleteFromColumn(
     ::google::bigtable::v2::Mutation_DeleteFromColumn const&
         delete_from_column) {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  auto maybe_column_family = utilities_->FindColumnFamily(delete_from_column);
+  if (!maybe_column_family.ok()) {
+    return maybe_column_family.status();
+  }
+
+  // We need to check if the given timerange is empty or reversed, but
+  // only up to the server's time accuracy (in our case, milliseconds)
+  // - For example a time range of [1000, 1200] would be empty.
+  uint64_t start_count = std::numeric_limits<uint64_t>::max();
+  uint64_t end_count = std::numeric_limits<uint64_t>::min();
+  if (delete_from_column.has_time_range()) {
+    auto start = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::microseconds(
+            delete_from_column.time_range().start_timestamp_micros()));
+    auto end = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::microseconds(
+            delete_from_column.time_range().end_timestamp_micros()));
+
+    // An end timestamp micros of 0 is to be interpreted as infinity,
+    // so we allow that.
+    if (end <= start &&
+        delete_from_column.time_range().end_timestamp_micros() != 0) {
+      return InvalidArgumentError(
+          "empty or reversed time range: the end timestamp must be more than "
+          "the start timestamp when they are truncated to the server's time "
+          "precision (milliseconds)",
+          GCP_ERROR_INFO().WithMetadata("delete_from_column proto",
+                                        delete_from_column.DebugString()));
+    }
+
+    start_count = start.count();
+    end_count = end.count();
+  }
+
+  // The idea here is to iterate over each row, and for each row
+  // lock the specified col+timestamp range
+
+  std::vector<std::string> starts;
+  std::vector<std::string> ends;
+
+  // 1. Acquire locks
+  auto const& column_family = maybe_column_family.value();
+  auto cf_it = std::unique_ptr<rocksdb::Iterator>(utilities_->db_->NewIterator(
+      rocksdb::ReadOptions(), column_family->GetRaw()));
+  cf_it->SeekToFirst();
+  while (cf_it->Valid()) {
+    auto maybe_decoded = KeyCoder::Decode(
+        std::string_view(cf_it->key().data(), cf_it->key().size()));
+    if (!maybe_decoded) {
+      return InternalError(
+          "Failed to delete from column: " + maybe_decoded.status().message(),
+          GCP_ERROR_INFO());
+    }
+    auto const& decoded = maybe_decoded.value();
+
+    auto start_key = KeyCoder::Encode(
+        decoded.row, delete_from_column.column_qualifier(), start_count);
+    auto end_key = KeyCoder::Encode(
+        decoded.row, delete_from_column.column_qualifier(), end_count);
+    rocksdb::Endpoint start(start_key, false);
+    rocksdb::Endpoint end(end_key, false);
+    rocksdb::Status status =
+        txn_->GetRangeLock(column_family->GetRaw(), start, end);
+    if (!status.ok()) {
+      return InternalError("Failed to delete from column: " + status.ToString(),
+                           GCP_ERROR_INFO());
+    }
+    starts.push_back(start_key);
+    ends.push_back(end_key);
+
+    cf_it->Seek(decoded.row + "\xFF");
+  }
+  cf_it->Refresh();
+
+  // 2. Now that things to delete are locked, we can delete them
+  for (size_t i = 0; i < starts.size(); ++i) {
+    cf_it->Seek(starts[i]);
+    while (cf_it->Valid()) {
+      std::cout << "Deleting from column; Key: " << cf_it->key().ToString()
+                << '\n';
+      if (cf_it->key().ToString() > ends[i]) {
+        break;
+      }
+      auto status = txn_->Delete(column_family->GetRaw(), cf_it->key());
+      if (!status.ok()) {
+        return InternalError(
+            "Failed to delete from column: " + status.ToString(),
+            GCP_ERROR_INFO());
+      }
+      cf_it->Next();
+    }
+  }
+  return Status();
 }
 
 Status PersistentRowTransaction::DeleteFromRow() {
@@ -1823,7 +1911,153 @@ Status PersistentRowTransaction::DeleteFromFamily(
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
 PersistentRowTransaction::ReadModifyWriteRow(
     google::bigtable::v2::ReadModifyWriteRowRequest const& request) {
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  if (row_key_.empty()) {
+    return InvalidArgumentError(
+        "row key not set",
+        GCP_ERROR_INFO().WithMetadata("request", request.DebugString()));
+  }
+  std::cout << "Processing ReadModifyWriteRow request\n";
+
+  // Copying behaviour from the InMemoryRowTransaction.
+  // In this case, InMemoryColumnFamily is a perfect storage
+  // for the partial results, and it lets us reuse some logic
+  // from the InMemoryRowTransaction.
+  std::map<std::string, InMemoryColumnFamily> tmp_families;
+
+  for (auto const& rule : request.rules()) {
+    auto maybe_column_family = utilities_->FindColumnFamily(rule);
+    if (!maybe_column_family) {
+      return maybe_column_family.status();
+    }
+
+    if (!rule.has_increment_amount() && !rule.has_append_value()) {
+      return InvalidArgumentError(
+          "either append value or increment amount must be set",
+          GCP_ERROR_INFO().WithMetadata("rule", rule.DebugString()));
+    }
+
+    auto const& column_family = maybe_column_family.value();
+    std::string partial_key =
+        KeyCoder::PartialEncode(request.row_key(), rule.column_qualifier());
+
+    // 1. Lock the key range
+    rocksdb::Endpoint start(partial_key, false);
+    rocksdb::Endpoint end(partial_key + "\xFF", false);
+    rocksdb::Status status =
+        txn_->GetRangeLock(column_family->GetRaw(), start, end);
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to read modify row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+    }
+
+    // 2. Acquire iterator to the first value in range (if exists)
+    auto cf_it =
+        std::unique_ptr<rocksdb::Iterator>(utilities_->db_->NewIterator(
+            rocksdb::ReadOptions(), column_family->GetRaw()));
+    cf_it->Seek(partial_key);
+
+    // 3. Main logic
+    uint64_t system_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    if (!cf_it->Valid()) {
+      std::string value;
+      if (rule.has_append_value()) {
+        value = rule.append_value();
+      } else {
+        value =
+            google::cloud::internal::EncodeBigEndian(rule.increment_amount());
+      }
+      txn_->Put(column_family->GetRaw(),
+                KeyCoder::Encode(request.row_key(), rule.column_qualifier(),
+                                 system_ms),
+                value);
+
+      auto result_timestamp = std::chrono::milliseconds(system_ms);
+      tmp_families[rule.family_name()].SetCell(
+          request.row_key(), rule.column_qualifier(), result_timestamp,
+          std::move(value));
+      continue;
+    }
+
+    auto maybe_decoded = KeyCoder::Decode(
+        std::string_view(cf_it->key().data(), cf_it->key().size()));
+    if (!maybe_decoded) {
+      return InvalidArgumentError(
+          "either append value or increment amount must be set",
+          GCP_ERROR_INFO().WithMetadata("rule", rule.DebugString()));
+    }
+    auto const& decoded_key = maybe_decoded.value();
+    if (decoded_key.row != request.row_key() ||
+        decoded_key.col != rule.column_qualifier()) {
+      txn_->Put(column_family->GetRaw(),
+                KeyCoder::Encode(request.row_key(), rule.column_qualifier(),
+                                 system_ms),
+                rule.append_value());
+      continue;
+    }
+
+    std::string prev_value;
+    status = txn_->Get(rocksdb::ReadOptions(), column_family->GetRaw(),
+                       cf_it->key(), &prev_value);
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to read modify row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+    }
+
+    std::string value;
+    if (rule.has_append_value()) {
+      std::cout << "Procesing append rule with append value: "
+                << rule.append_value() << '\n';
+      value = prev_value + rule.append_value();
+    } else {  // has increment value
+      std::cout << "Procesing increment rule with increment amount: "
+                << rule.increment_amount() << '\n';
+      auto maybe_prev_value_int =
+          google::cloud::internal::DecodeBigEndian<std::int64_t>(prev_value);
+      if (!maybe_prev_value_int) {
+        return maybe_column_family.status();
+      }
+      value = google::cloud::internal::EncodeBigEndian(
+          rule.increment_amount() + maybe_prev_value_int.value());
+    }
+
+    auto result_timestamp = std::chrono::milliseconds(system_ms);
+    if (decoded_key.timestamp > system_ms) {
+      result_timestamp = std::chrono::milliseconds(decoded_key.timestamp);
+      status = txn_->Delete(column_family->GetRaw(), cf_it->key());
+      if (!status.ok()) {
+        return InternalError(
+            "Failed to read modify row: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+      }
+      status = txn_->Put(column_family->GetRaw(), cf_it->key(), value);
+      if (!status.ok()) {
+        return InternalError(
+            "Failed to read modify row: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+      }
+    } else {
+      std::string new_key = KeyCoder::Encode(
+          request.row_key(), rule.column_qualifier(), system_ms);
+      status = txn_->Put(column_family->GetRaw(), new_key, value);
+      if (!status.ok()) {
+        return InternalError(
+            "Failed to read modify row: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("row key prefix", partial_key));
+      }
+    }
+
+    tmp_families[rule.family_name()].SetCell(
+        request.row_key(), rule.column_qualifier(), result_timestamp,
+        std::move(value));
+  }
+
+  // Reusing functionality from the InMemory impl.
+  return FamiliesToReadModifyWriteResponse(row_key_, tmp_families);
 }
 
 google::bigtable::v2::ReadModifyWriteRowResponse
@@ -1857,7 +2091,7 @@ FamiliesToReadModifyWriteResponse(
 
 template <typename MESSAGE>
 StatusOr<std::shared_ptr<InMemoryColumnFamily>>
-InMemoryTableUtilities::FindColumnFamily(MESSAGE const& message) const {
+InMemoryTableOperations::FindColumnFamily(MESSAGE const& message) const {
   auto column_family_it = column_families_.find(message.family_name());
   if (column_family_it == column_families_.end()) {
     return NotFoundError(
@@ -1869,7 +2103,7 @@ InMemoryTableUtilities::FindColumnFamily(MESSAGE const& message) const {
 
 template <typename MESSAGE>
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
-PersistentTableUtilities::FindColumnFamily(MESSAGE const& message) const {
+PersistentTableOperations::FindColumnFamily(MESSAGE const& message) const {
   auto column_family_it = column_families_.find(message.family_name());
   if (column_family_it == column_families_.end()) {
     return NotFoundError(
