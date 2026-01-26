@@ -25,8 +25,8 @@
 #include "limits.h"
 #include "range_set.h"
 #include "re2/re2.h"
+#include "redolog.h"
 #include "row_streamer.h"
-#include "utils.h"
 #include <google/bigtable/admin/v2/bigtable_table_admin.pb.h>
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/admin/v2/types.pb.h>

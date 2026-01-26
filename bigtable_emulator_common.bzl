@@ -26,7 +26,7 @@ bigtable_emulator_common_hdrs = [
     "table.h",
     "test_util.h",
     "to_grpc_status.h",
-    "utils.h",
+    "redolog.h",
     "key_coder.h",
 ]
 
@@ -40,6 +40,6 @@ bigtable_emulator_common_srcs = [
     "table.cc",
     "test_util.cc",
     "to_grpc_status.cc",
-    "utils.cc",
+    "redolog.cc",
     "key_coder.cpp",
 ]
