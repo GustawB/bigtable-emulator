@@ -19,6 +19,7 @@
 #include "absl/strings/match.h"
 #include "table.h"
 #include <google/bigtable/admin/v2/table.pb.h>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -89,19 +90,96 @@ StatusOr<btadmin::Table> ApplyView(std::string const& table_name,
           GCP_ERROR_INFO().WithMetadata("view", Table_View_Name(view)));
   }
 }
+
+Status ValidateTableName(std::string const& s) {
+  if (s.empty()) {
+    return InvalidArgumentError("Table name is empty", GCP_ERROR_INFO());
+  }
+  if (!s.empty() && s.front() == '/') {
+    return InvalidArgumentError("Table name must not start with '/'",
+                                GCP_ERROR_INFO().WithMetadata("table_name", s));
+  }
+  if (absl::StrContains(s, "//")) {
+    return InvalidArgumentError("Table name must not contain '//'",
+                                GCP_ERROR_INFO().WithMetadata("table_name", s));
+  }
+  if (absl::StrContains(s, '\\')) {
+    return InvalidArgumentError("Table name must not contain '\\\\'",
+                                GCP_ERROR_INFO().WithMetadata("table_name", s));
+  }
+  return Status();
+}
 }  // anonymous namespace
 
-Cluster::Cluster(bool const should_persist) : should_persist_(should_persist) {}
+Cluster::Cluster(bool const should_persist) : should_persist_(should_persist) {
+  if (should_persist_) {
+    BootstrapTablesFromDisk();
+  }
+}
+
+void Cluster::BootstrapTablesFromDisk() {
+  std::error_code ec;
+
+  std::filesystem::path root(data_root_);
+  if (!std::filesystem::exists(root, ec)) return;
+
+  for (auto it = std::filesystem::recursive_directory_iterator(
+           root, std::filesystem::directory_options::skip_permission_denied,
+           ec);
+       it != std::filesystem::recursive_directory_iterator();
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    if (!it->is_directory(ec)) continue;
+
+    auto db_path = it->path();
+    auto current = db_path / "CURRENT";
+    if (!std::filesystem::exists(current, ec)) continue;
+
+    it.disable_recursion_pending();
+
+    auto rel = std::filesystem::relative(db_path, root, ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    std::string table_name = rel.generic_string();
+    auto maybe_table = Table::Load(table_name, data_root_);
+    if (!maybe_table) {
+      std::cerr << "BootstrapTablesFromDisk: failed to load table "
+                << table_name << ": " << maybe_table.status() << "\n";
+      continue;
+    }
+
+    std::lock_guard<std::mutex> lock(mu_);
+    table_by_name_.emplace(table_name, std::move(maybe_table.value()));
+  }
+}
 
 StatusOr<btadmin::Table> Cluster::CreateTable(std::string const& table_name,
                                               btadmin::Table schema) {
+  auto st = ValidateTableName(table_name);
+  if (!st.ok()) return st;
   schema.set_name(table_name);
   std::cout << "Creating table " << table_name << std::endl;
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (table_by_name_.find(table_name) != table_by_name_.end()) {
+      return google::cloud::internal::AlreadyExistsError(
+          "Table already exists.",
+          GCP_ERROR_INFO().WithMetadata("table_name", table_name));
+    }
+  }
+
   auto maybe_table =
-      Table::Create(std::move(schema), should_persist_, data_root_, true);
+      Table::Create(std::move(schema), should_persist_, data_root_);
   if (!maybe_table) {
     return maybe_table.status();
   }
+
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (!table_by_name_.emplace(table_name, *maybe_table).second) {
@@ -115,6 +193,9 @@ StatusOr<btadmin::Table> Cluster::CreateTable(std::string const& table_name,
 
 StatusOr<std::vector<btadmin::Table>> Cluster::ListTables(
     std::string const& instance_name, btadmin::Table_View view) const {
+  auto st = ValidateTableName(instance_name);
+  if (!st.ok()) return st;
+
   std::map<std::string, std::shared_ptr<Table>> table_by_name_copy;
   {
     std::lock_guard<std::mutex> lock(mu_);
@@ -123,7 +204,7 @@ StatusOr<std::vector<btadmin::Table>> Cluster::ListTables(
   std::vector<btadmin::Table> res;
   std::string const prefix = instance_name + "/tables/";
   std::cout << "Listing tables with prefix " << prefix << std::endl;
-  for (auto name_and_table_it = table_by_name_copy.upper_bound(prefix);
+  for (auto name_and_table_it = table_by_name_copy.lower_bound(prefix);
        name_and_table_it != table_by_name_copy.end() &&
        absl::StartsWith(name_and_table_it->first, prefix);
        ++name_and_table_it) {
@@ -140,8 +221,10 @@ StatusOr<std::vector<btadmin::Table>> Cluster::ListTables(
 
 StatusOr<btadmin::Table> Cluster::GetTable(std::string const& table_name,
                                            btadmin::Table_View view) {
-  std::shared_ptr<Table> found_table;
+  auto st = ValidateTableName(table_name);
+  if (!st.ok()) return st;
 
+  std::shared_ptr<Table> found_table;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = table_by_name_.find(table_name);
@@ -151,26 +234,20 @@ StatusOr<btadmin::Table> Cluster::GetTable(std::string const& table_name,
   }
 
   if (!found_table) {
-    if (!should_persist_) {
-      return NotFoundError("No such table.", GCP_ERROR_INFO().WithMetadata(
-                                                 "table_name", table_name));
-    }
-
-    auto maybe_loaded = Table::Load(table_name, data_root_);
-    if (!maybe_loaded) return maybe_loaded.status();
-    auto loaded = std::move(maybe_loaded.value());
-
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      auto [it, inserted] = table_by_name_.emplace(table_name, loaded);
-      found_table = inserted ? std::move(loaded) : it->second;
-    }
+    return NotFoundError("No such table.", GCP_ERROR_INFO().WithMetadata(
+                                               "table_name", table_name));
   }
 
   return ApplyView(table_name, *found_table, view, btadmin::Table::SCHEMA_VIEW);
 }
 
 Status Cluster::DeleteTable(std::string const& table_name) {
+  auto st = ValidateTableName(table_name);
+  if (!st.ok()) return st;
+
+  std::string key;
+  std::filesystem::path db_path;
+  std::shared_ptr<Table> doomed;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = table_by_name_.find(table_name);
@@ -183,42 +260,54 @@ Status Cluster::DeleteTable(std::string const& table_name) {
           "The table has deletion protection.",
           GCP_ERROR_INFO().WithMetadata("table_name", table_name));
     }
+
+    doomed = it->second;
+    db_path = std::filesystem::path(data_root_) / table_name;
     table_by_name_.erase(it);
   }
+
+  if (!should_persist_) return Status();
+
+  doomed.reset();
+
+  rocksdb::Options options;
+  auto s = rocksdb::DestroyDB(db_path.string(), options);
+  if (!s.ok()) {
+    std::error_code ec;
+    std::filesystem::remove_all(db_path, ec);
+    if (!ec) return Status();
+
+    return google::cloud::internal::InternalError(
+        "Failed to destroy table RocksDB at " + db_path.string() + "; " +
+            s.ToString(),
+        GCP_ERROR_INFO().WithMetadata("table_name", table_name));
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(db_path, ec);
   return Status();
 }
 
 bool Cluster::HasTable(std::string const& table_name) const {
+  auto st = ValidateTableName(table_name);
+  if (!st.ok()) return false;
   std::lock_guard<std::mutex> lock(mu_);
   return table_by_name_.find(table_name) != table_by_name_.end();
 }
 
 StatusOr<std::shared_ptr<Table>> Cluster::FindTable(
     std::string const& table_name) {
+  auto st = ValidateTableName(table_name);
+  if (!st.ok()) return st;
+
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = table_by_name_.find(table_name);
     if (it != table_by_name_.end()) return it->second;
   }
 
-  if (!should_persist_) {
-    return NotFoundError("No such table.", GCP_ERROR_INFO().WithMetadata(
-                                               "table_name", table_name));
-  }
-
-  // Try lazy-load from RocksDB
-  auto maybe_table = Table::Load(table_name, data_root_);
-  if (!maybe_table) {
-    return maybe_table.status();
-  }
-
-  // Another thread may loaded the table
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto [it, inserted] =
-        table_by_name_.emplace(table_name, maybe_table.value());
-    return it->second;
-  }
+  return NotFoundError("No such table.",
+                       GCP_ERROR_INFO().WithMetadata("table_name", table_name));
 }
 
 }  // namespace emulator
