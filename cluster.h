@@ -65,7 +65,7 @@ class Cluster {
    */
   StatusOr<std::vector<google::bigtable::admin::v2::Table>> ListTables(
       std::string const& instance_name,
-      google::bigtable::admin::v2::Table_View view) const;
+      google::bigtable::admin::v2::Table_View view);
 
   /**
    * Get details about a given table.
@@ -97,7 +97,7 @@ class Cluster {
    *     `/projects/{}/instances/{}/tables/{}`.
    * @return true if table exists.
    */
-  bool HasTable(std::string const& table_name) const;
+  bool HasTable(std::string const& table_name);
 
   /**
    * Find a table by name.
@@ -109,7 +109,7 @@ class Cluster {
   StatusOr<std::shared_ptr<Table>> FindTable(std::string const& table_name);
 
  private:
-  void BootstrapTablesFromDisk();
+  void BootstrapTablesFromDisk(std::string const& table_path);
 
   mutable std::mutex mu_;
 
@@ -125,6 +125,7 @@ class Cluster {
 
   bool should_persist_;
   std::string data_root_ = "/root/";
+  std::set<std::string> loaded_tables_paths_;
 };
 
 }  // namespace emulator

@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <stack>
 #include <string>
 #include <utility>
@@ -88,7 +89,29 @@ class TableOperations {
       google::bigtable::admin::v2::ModifyColumnFamiliesRequest const& request,
       google::bigtable::admin::v2::Table schema) = 0;
 
+  virtual void Cleanup() = 0;
+
   virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) = 0;
+
+  class ScopedLock {
+   public:
+    explicit ScopedLock(TableOperations* parent, bool modify_cfs)
+        : parent_(parent), modify_cfs_(modify_cfs) {
+      parent_->LockScopeImpl(modify_cfs_);
+    }
+
+    ~ScopedLock() { parent_->UnlockScopeImpl(modify_cfs_); }
+
+   private:
+    TableOperations* parent_;
+    bool modify_cfs_;
+  };
+
+  ScopedLock LockScope(bool modify_cfs) { return ScopedLock(this, modify_cfs); }
+
+ protected:
+  virtual void LockScopeImpl(bool modify_cfs) const = 0;
+  virtual void UnlockScopeImpl(bool modify_cfs) const = 0;
 };
 
 class InMemoryTableOperations
@@ -146,6 +169,8 @@ class InMemoryTableOperations
     return Status();
   }
 
+  void Cleanup() override { column_families_.clear(); }
+
   std::shared_ptr<InMemoryTableOperations> get() { return shared_from_this(); }
 
   template <typename MESSAGE>
@@ -164,8 +189,14 @@ class InMemoryTableOperations
     return column_families_.find(column_family);
   }
 
+ protected:
+  void LockScopeImpl(bool /*modify_cfs*/) const override { mu_.lock(); }
+
+  void UnlockScopeImpl(bool /*modify_cfs*/) const override { mu_.unlock(); }
+
  private:
   std::map<std::string, std::shared_ptr<InMemoryColumnFamily>> column_families_;
+  mutable std::mutex mu_;
 };
 
 class PersistentTableOperations
@@ -186,7 +217,6 @@ class PersistentTableOperations
       absl::optional<google::bigtable::v2::RowFilter>) const override;
 
   StatusOr<std::size_t> GetRowCountEstimate() override;
-
   Status RemoveAllDataFromColumnFamilies() override;
 
   Status DropRowRange(std::string const& row_key_prefix) override;
@@ -197,6 +227,11 @@ class PersistentTableOperations
 
   Status PersistSchema(
       google::bigtable::admin::v2::Table const& schema) override;
+
+  void Cleanup() override {
+    column_families_.clear();
+    db_.reset();
+  }
 
   StatusOr<google::bigtable::admin::v2::Table> LoadSchema() const;
 
@@ -209,6 +244,22 @@ class PersistentTableOperations
       MESSAGE const& message) const;
 
   friend PersistentRowTransaction;
+
+ protected:
+  void LockScopeImpl(bool modify_cfs) const override {
+    if (modify_cfs) {
+      mu_.lock();
+    } else {
+      mu_.lock_shared();
+    }
+  }
+  void UnlockScopeImpl(bool modify_cfs) const override {
+    if (modify_cfs) {
+      mu_.unlock();
+    } else {
+      mu_.unlock_shared();
+    }
+  }
 
  private:
   Status ReconcileColumnFamiliesToTarget(
@@ -226,6 +277,7 @@ class PersistentTableOperations
   std::shared_ptr<rocksdb::TransactionDB> db_;
   std::map<std::string, std::shared_ptr<PersistentColumnFamily>>
       column_families_;
+  mutable std::shared_mutex mu_;
 };
 
 /// Objects of this class represent Bigtable tables.
@@ -259,8 +311,7 @@ class Table : public std::enable_shared_from_this<Table> {
       std::string const& row_key,
       google::protobuf::RepeatedPtrField<google::bigtable::v2::Mutation> const&
           mutations) {
-    std::lock_guard<std::mutex> lock(mu_);
-
+    auto lock_scope = utilities_->LockScope(false);
     return DoMutationsWithPossibleRollback(row_key, mutations);
   }
 
@@ -279,6 +330,11 @@ class Table : public std::enable_shared_from_this<Table> {
   Status DropRowRange(
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request);
 
+  void MarkForDeletion() {
+    auto scoped_lock = utilities_->LockScope(false);
+    utilities_->Cleanup();
+  }
+
   // For testing only
   std::shared_ptr<TableOperations> GetUtilities() { return utilities_; }
 
@@ -292,7 +348,6 @@ class Table : public std::enable_shared_from_this<Table> {
 
   Status PrepareSchema();
 
-  mutable std::mutex mu_;
   google::bigtable::admin::v2::Table schema_;
 
   Status Construct(google::bigtable::admin::v2::Table schema,
