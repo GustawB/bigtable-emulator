@@ -113,6 +113,15 @@ Status ValidateTableName(std::string const& s) {
 
 Cluster::Cluster(bool const should_persist) : should_persist_(should_persist) {}
 
+/**
+ * Lazily-eager approach to loading of existing tables.
+ * Until we get a first request, we don't know where the tables are stored.
+ * But when we get a request, we get a table name, as well as its "table space".
+ * Then, BootstrapTablesFromDisk checks if we didn't load it before, and if we
+ * didn't it loads the whole table space.
+ * @param table_path string representing the path of the tabel that triggered
+ * the bootstrapping
+ */
 void Cluster::BootstrapTablesFromDisk(std::string const& table_path) {
   std::error_code ec;
 
@@ -275,6 +284,15 @@ Status Cluster::DeleteTable(std::string const& table_name) {
 
   if (!should_persist_) return Status();
 
+  /**
+   * There may be many live shared_ptrs to the Table. So, normally, we would
+   * like to wait for the destructor. However, Table has a vector of column
+   * families, which have a shared_ptr to the owning Table. So, the
+   * MarkForDeletion will delete all column fams. It is safe, as this function
+   * will acquire an exclusive lock to the Table, and so when it exits, each
+   * other request that started processing will just return an error that CF is
+   * non-existent.
+   */
   doomed->MarkForDeletion();
   doomed.reset();
 

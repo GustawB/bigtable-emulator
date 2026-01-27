@@ -20,7 +20,6 @@
 #include "rocksdb/db.h"
 #include "table.h"
 #include <google/bigtable/admin/v2/table.pb.h>
-#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>

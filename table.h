@@ -93,6 +93,11 @@ class TableOperations {
 
   virtual Status PersistSchema(google::bigtable::admin::v2::Table const&) = 0;
 
+  /**
+   * Table object would like to use locking, but depending on the type
+   * (InMemory, Persistent), it would like to lock a different lock (mutex, or
+   * shared). ScopedLock abstract this.
+   */
   class ScopedLock {
    public:
     explicit ScopedLock(TableOperations* parent, bool modify_cfs)
@@ -229,6 +234,11 @@ class PersistentTableOperations
       google::bigtable::admin::v2::Table const& schema) override;
 
   void Cleanup() override {
+    /**
+     * We need to clear these because both column families and db_ hold
+     * a shared ptr to the owning Table. If we didn't do this, the Table's
+     * destructor would never be called, and so we would have a memory leak.
+     */
     column_families_.clear();
     db_.reset();
   }
@@ -246,6 +256,13 @@ class PersistentTableOperations
   friend PersistentRowTransaction;
 
  protected:
+  /**
+   * Persistent table gets the shared lock when it doesn't modify schema,
+   * and exclusive otherwise.
+   *
+   * @param modify_cfs
+   * Controls whether to get exclusive or shared lock
+   */
   void LockScopeImpl(bool modify_cfs) const override {
     if (modify_cfs) {
       mu_.lock();
@@ -253,6 +270,14 @@ class PersistentTableOperations
       mu_.lock_shared();
     }
   }
+
+  /**
+   * Persistent table gets the shared lock when it doesn't modify schema,
+   * and exclusive otherwise.
+   *
+   * @param modify_cfs
+   * Controls whether to get exclusive or shared lock
+   */
   void UnlockScopeImpl(bool modify_cfs) const override {
     if (modify_cfs) {
       mu_.unlock();
@@ -331,7 +356,7 @@ class Table : public std::enable_shared_from_this<Table> {
       ::google::bigtable::admin::v2::DropRowRangeRequest const& request);
 
   void MarkForDeletion() {
-    auto scoped_lock = utilities_->LockScope(false);
+    auto scoped_lock = utilities_->LockScope(true);
     utilities_->Cleanup();
   }
 

@@ -43,7 +43,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <ostream>
 #include <stack>
 #include <string>
@@ -991,7 +990,13 @@ Status Table::SampleRowKeys(
   auto sample_every =
       static_cast<std::uint64_t>(std::ceil(1.0 / pass_probability));
 
-  auto lock_scope = utilities_->LockScope(false);
+  /**
+   * For Persistent Table, CreateCellStream will create new RocksDB Iterator.
+   * However, each iterator can work on a different version of data,
+   * so for simplicity let's just acquire the exclusive lock (on the
+   * assumption that SampleRowKeys won't be invoked often).
+   */
+  auto lock_scope = utilities_->LockScope(true);
 
   // First, stream all rows and cells and compute the offsets.
   auto all_rows_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
@@ -1182,7 +1187,7 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
         GCP_ERROR_INFO().WithMetadata("mask", disallowed_mask.DebugString()));
   }
 
-  auto lock_scope = utilities_->LockScope(false);
+  auto lock_scope = utilities_->LockScope(true);
   FieldMaskUtil::MergeMessageTo(new_schema, to_update,
                                 FieldMaskUtil::MergeOptions(), &schema_);
   auto s = utilities_->PersistSchema(schema_);
@@ -1513,6 +1518,7 @@ bool Table::IsDeleteProtected() const {
 }
 
 bool Table::IsDeleteProtectedNoLock() const {
+  auto lock_scope = utilities_->LockScope(false);
   return schema_.deletion_protection();
 }
 
@@ -1552,9 +1558,9 @@ Status Table::DropRowRange(
   }
 
   Status status = utilities_->DropRowRange(row_key_prefix);
-  /*if (!status.ok()) {
+  if (!status.ok()) {
     return status;
-  }*/
+  }
   return Status();
 }
 
