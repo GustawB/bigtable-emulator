@@ -342,7 +342,7 @@ class DefaultEmulatorServer : public EmulatorServer {
         cluster_(std::make_shared<Cluster>(persist)),
         bt_service_(cluster_),
         table_service_(cluster_) {
-    std::cout << "D\n";
+
     builder_.AddListeningPort(host + ":" + std::to_string(port),
                               grpc::InsecureServerCredentials(), &bound_port_);
     builder_.SetMaxReceiveMessageSize(256 * 1024 * 1024);
