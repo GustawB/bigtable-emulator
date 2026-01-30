@@ -43,7 +43,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <ostream>
 #include <stack>
 #include <string>
@@ -945,7 +944,7 @@ StatusOr<std::shared_ptr<Table>> Table::Create(
 }
 
 google::bigtable::admin::v2::Table Table::GetSchema() const {
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
   return schema_;
 }
 
@@ -991,7 +990,13 @@ Status Table::SampleRowKeys(
   auto sample_every =
       static_cast<std::uint64_t>(std::ceil(1.0 / pass_probability));
 
-  std::lock_guard<std::mutex> lock(mu_);
+  /**
+   * For Persistent Table, CreateCellStream will create new RocksDB Iterator.
+   * However, each iterator can work on a different version of data,
+   * so for simplicity let's just acquire the exclusive lock (on the
+   * assumption that SampleRowKeys won't be invoked often).
+   */
+  auto lock_scope = utilities_->LockScope(true);
 
   // First, stream all rows and cells and compute the offsets.
   auto all_rows_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
@@ -1109,7 +1114,6 @@ Status Table::SampleRowKeys(
 Status Table::Construct(google::bigtable::admin::v2::Table schema,
                         bool should_persist, std::string const& data_root,
                         OpenMode mode) {
-  std::lock_guard<std::mutex> lock(mu_);
   schema_ = std::move(schema);
 
   Status parse_result = PrepareSchema();
@@ -1137,9 +1141,11 @@ Status Table::Construct(google::bigtable::admin::v2::Table schema,
 StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
     btadmin::ModifyColumnFamiliesRequest const& request) {
   std::cout << "Modify column families: " << request.DebugString() << std::endl;
-  std::unique_lock<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(true);
 
+  std::cout << "X\n";
   auto maybe_new_schema = utilities_->ModifyColumnFamilies(request, schema_);
+  std::cout << "Y\n";
   if (!maybe_new_schema) {
     return maybe_new_schema.status();
   }
@@ -1149,7 +1155,6 @@ StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
   auto s = utilities_->PersistSchema(schema_);
   if (!s.ok()) return s;
 
-  lock.unlock();
   return new_schema;
 }
 // NOLINTEND(readability-function-cognitive-complexity)
@@ -1182,7 +1187,7 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
         GCP_ERROR_INFO().WithMetadata("mask", disallowed_mask.DebugString()));
   }
 
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(true);
   FieldMaskUtil::MergeMessageTo(new_schema, to_update,
                                 FieldMaskUtil::MergeOptions(), &schema_);
   auto s = utilities_->PersistSchema(schema_);
@@ -1192,7 +1197,7 @@ Status Table::Update(google::bigtable::admin::v2::Table const& new_schema,
 }
 
 Status Table::MutateRow(google::bigtable::v2::MutateRowRequest const& request) {
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
 
   return DoMutationsWithPossibleRollback(request.row_key(),
                                          request.mutations());
@@ -1371,7 +1376,7 @@ std::vector<CellStream> FilteredPersistentTableStream::CreateCellStreams(
 StatusOr<google::bigtable::v2::CheckAndMutateRowResponse>
 Table::CheckAndMutateRow(
     google::bigtable::v2::CheckAndMutateRowRequest const& request) {
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
 
   auto const& row_key = request.row_key();
 
@@ -1457,7 +1462,7 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
   } else {
     row_set = std::make_shared<StringRangeSet>(StringRangeSet::All());
   }
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
   StatusOr<CellStream> maybe_stream;
   if (request.has_filter()) {
     maybe_stream =
@@ -1508,17 +1513,18 @@ Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
 }
 
 bool Table::IsDeleteProtected() const {
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
   return IsDeleteProtectedNoLock();
 }
 
 bool Table::IsDeleteProtectedNoLock() const {
+  auto lock_scope = utilities_->LockScope(false);
   return schema_.deletion_protection();
 }
 
 Status Table::DropRowRange(
     ::google::bigtable::admin::v2::DropRowRangeRequest const& request) {
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
 
   if (!request.has_row_key_prefix() &&
       !request.has_delete_all_data_from_table()) {
@@ -1552,9 +1558,9 @@ Status Table::DropRowRange(
   }
 
   Status status = utilities_->DropRowRange(row_key_prefix);
-  /*if (!status.ok()) {
+  if (!status.ok()) {
     return status;
-  }*/
+  }
   return Status();
 }
 
@@ -1568,7 +1574,7 @@ Table::ReadModifyWriteRow(
             "row_key size", absl::StrFormat("%zu", request.row_key().size())));
   }
 
-  std::lock_guard<std::mutex> lock(mu_);
+  auto lock_scope = utilities_->LockScope(false);
 
   std::unique_ptr<RowTransaction> row_transaction =
       utilities_->NewRowTransaction(request.row_key());

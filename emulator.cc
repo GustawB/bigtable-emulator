@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
       "Usage: %s --host=<host> --port=<port> [--persist | --nopersist]",
       argv[0]));
   absl::ParseCommandLine(argc, argv);
-
+  std::cout << "A\n";
   auto maybe_server =
       google::cloud::bigtable::emulator::CreateDefaultEmulatorServer(
           absl::GetFlag(FLAGS_host), absl::GetFlag(FLAGS_port),
@@ -45,6 +45,7 @@ int main(int argc, char* argv[]) {
               << std::endl;
     return 1;
   }
+  std::cout << "B\n";
 
   auto& server = maybe_server.value();
 
