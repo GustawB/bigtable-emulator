@@ -22,4 +22,5 @@ bigtable_emulator_unit_tests = [
     "range_set_test.cc",
     "server_test.cc",
     "table_test.cc",
+    "key_coder_test.cc",
 ]
