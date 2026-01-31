@@ -1817,19 +1817,19 @@ Status PersistentRowTransaction::SetCell(
 
   auto const& column_family = maybe_column_family.value();
 
-  auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::microseconds(set_cell.timestamp_micros()));
+  auto timestamp = set_cell.timestamp_micros();
 
   if (timestamp_override.has_value()) {
-    timestamp = timestamp_override.value();
+    timestamp = std::chrono::duration_cast<std::chrono::microseconds>(timestamp_override.value()).count();
   }
 
   std::cout << "Writing to column family: "
             << column_family->GetRaw()->GetName() << "; row key: " << row_key_
             << "; column: " << set_cell.column_qualifier()
-            << "; value: " << set_cell.value() << std::endl;
+            << "; value: " << set_cell.value()
+              << "; timestamp: " << timestamp << std::endl;
   std::string prepared_key = KeyCoder::Encode(
-      row_key_, set_cell.column_qualifier(), timestamp.count());
+      row_key_, set_cell.column_qualifier(), timestamp);
   rocksdb::Status status =
       txn_->Put(column_family->GetRaw(), prepared_key, set_cell.value());
 

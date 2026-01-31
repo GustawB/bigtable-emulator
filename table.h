@@ -253,6 +253,23 @@ class PersistentTableOperations
   StatusOr<std::shared_ptr<PersistentColumnFamily>> FindColumnFamily(
       MESSAGE const& message) const;
 
+    std::map<std::string, std::shared_ptr<PersistentColumnFamily>>::iterator
+    begin() {
+        return column_families_.begin();
+    }
+    std::map<std::string, std::shared_ptr<PersistentColumnFamily>>::iterator end() {
+        return column_families_.end();
+    }
+    std::map<std::string, std::shared_ptr<PersistentColumnFamily>>::iterator find(
+        std::string const& column_family) {
+        return column_families_.find(column_family);
+    }
+
+    std::unique_ptr<rocksdb::Iterator> GetIterator(std::shared_ptr<PersistentColumnFamily> const& cf) const {
+        return std::unique_ptr<rocksdb::Iterator>(
+            db_->NewIterator(rocksdb::ReadOptions(), cf->GetRaw()));
+    }
+
   friend PersistentRowTransaction;
 
  protected:
