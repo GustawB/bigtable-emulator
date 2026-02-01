@@ -37,6 +37,22 @@ namespace google {
 namespace cloud {
 namespace bigtable {
 namespace emulator {
+namespace {
+// Helper to get the next lexicographical string (for seeking to next
+// row/column)
+std::string NextLexicographicalString(std::string const& s) {
+  std::string next = s;
+  for (int i = next.size() - 1; i >= 0; --i) {
+    if (static_cast<unsigned char>(next[i]) < 0xFF) {
+      next[i]++;
+      next.resize(i + 1);
+      return next;
+    }
+  }
+  // If all bytes are 0xFF, append a 0x00
+  return s + '\0';
+}
+}  // anonymous namespace
 
 StatusOr<ReadModifyWriteCellResult> ColumnRow::ReadModifyWrite(
     std::int64_t inc_value) {
@@ -498,6 +514,39 @@ bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterRowChange()
   return false;
 }
 
+class FilteredPersistentColumnFamilyStream::FilterApply {
+ public:
+  explicit FilterApply(FilteredPersistentColumnFamilyStream& parent)
+      : parent_(parent) {}
+
+  bool operator()(ColumnRange const& column_range) {
+    if (column_range.column_family == parent_.column_family_name_) {
+      parent_.column_ranges_.Intersect(column_range.range);
+    }
+    return true;
+  }
+
+  bool operator()(TimestampRange const& timestamp_range) {
+    parent_.timestamp_ranges_.Intersect(timestamp_range.range);
+    return true;
+  }
+
+  bool operator()(RowKeyRegex const& row_key_regex) {
+    parent_.row_regexes_.emplace_back(row_key_regex.regex);
+    return true;
+  }
+
+  bool operator()(FamilyNameRegex const&) { return false; }
+
+  bool operator()(ColumnRegex const& column_regex) {
+    parent_.column_regexes_.emplace_back(column_regex.regex);
+    return true;
+  }
+
+ private:
+  FilteredPersistentColumnFamilyStream& parent_;
+};
+
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
     std::string const& column_family_name,
@@ -506,12 +555,14 @@ FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     : column_family_name_(column_family_name),
       handle_(std::move(handle)),
       db_(std::move(db)),
-      row_set_(std::move(row_set)) {}
+      row_ranges_(std::move(row_set)),
+      column_ranges_(StringRangeSet::All()),
+      timestamp_ranges_(TimestampRangeSet::All()) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
-  // TODO: Implement
-  return false;
+  assert(!initialized_);
+  return absl::visit(FilterApply(*this), internal_filter);
 }
 
 bool FilteredPersistentColumnFamilyStream::HasValue() const {
@@ -532,35 +583,26 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
 
 bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   InitializeIfNeeded();
+  assert(HasValue());
   cur_value_.reset();
+
   if (mode == NextMode::kCell) {
     it_->Next();
   } else if (mode == NextMode::kColumn) {
-    while (it_->Valid()) {
-      auto maybe_decoded = KeyCoder::Decode(
-          std::string_view(it_->key().data(), it_->key().size()));
-      if (!maybe_decoded.ok()) {
-        return false;
-      }
-      if (maybe_decoded.value().col != curr_decoded_key_.col) {
-        break;
-      }
-      it_->Next();
-    }
+    std::string next_col = NextLexicographicalString(curr_decoded_key_.col);
+    std::string seek_key =
+        KeyCoder::PartialEncode(curr_decoded_key_.row, next_col);
+    it_->Seek(seek_key);
   } else if (mode == NextMode::kRow) {
-    it_->Seek(curr_decoded_key_.row + "\xFF");
+    std::string next_row = NextLexicographicalString(curr_decoded_key_.row);
+    std::string seek_key = KeyCoder::PartialEncode(next_row, "");
+    it_->Seek(seek_key);
   } else {
     return false;
   }
 
   if (it_->Valid()) {
-    auto maybe_decoded = KeyCoder::Decode(
-        std::string_view(it_->key().data(), it_->key().size()));
-    if (!maybe_decoded.ok()) {
-      return false;
-    }
-    curr_decoded_key_ = maybe_decoded.value();
-    curr_value_string_ = it_->value().ToString();
+    PointToNextMatchingCell();
   }
   return true;
 }
@@ -574,13 +616,54 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
         db_->NewIterator(opts, handle_.get()));
     it_->SeekToFirst();
     if (it_->Valid()) {
-      curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
-      curr_value_string_ = it_->value().ToString();
+      PointToNextMatchingCell();
     } else {
       // TODO: remove debug print
       std::cout << it_->status().ToString() << std::endl;
     }
   }
+}
+
+bool FilteredPersistentColumnFamilyStream::PointToNextMatchingCell() const {
+  while (it_->Valid()) {
+    auto maybe_decoded = KeyCoder::Decode(
+        std::string_view(it_->key().data(), it_->key().size()));
+    if (!maybe_decoded.ok()) {
+      return false;
+    }
+    curr_decoded_key_ = maybe_decoded.value();
+    curr_value_string_ = it_->value().ToString();
+    if (CellMatchesFilters()) {
+      return true;
+    }
+    it_->Next();
+  }
+  cur_value_.reset();
+  return false;
+}
+
+bool FilteredPersistentColumnFamilyStream::CellMatchesFilters() const {
+  if (row_ranges_ && !row_ranges_->Contains(curr_decoded_key_.row)) {
+    return false;
+  }
+  for (auto const& regex : row_regexes_) {
+    if (!re2::RE2::PartialMatch(curr_decoded_key_.row, *regex)) {
+      return false;
+    }
+  }
+  if (!column_ranges_.Contains(curr_decoded_key_.col)) {
+    return false;
+  }
+  for (auto const& regex : column_regexes_) {
+    if (!re2::RE2::PartialMatch(curr_decoded_key_.col, *regex)) {
+      return false;
+    }
+  }
+  if (!timestamp_ranges_.Contains(
+          std::chrono::milliseconds(curr_decoded_key_.timestamp))) {
+    return false;
+  }
+  return true;
 }
 
 StatusOr<std::shared_ptr<InMemoryColumnFamily>>

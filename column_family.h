@@ -642,6 +642,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
       std::string const& column_family_name,
       std::shared_ptr<rocksdb::TransactionDB> db,
       std::shared_ptr<StringRangeSet const> row_set);
+
   bool ApplyFilter(InternalFilter const& internal_filter) override;
   bool HasValue() const override;
   CellView const& Value() const override;
@@ -649,13 +650,23 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   std::string const& column_family_name() const { return column_family_name_; }
 
  private:
+  class FilterApply;
+
   void InitializeIfNeeded() const;
+  bool PointToNextMatchingCell() const;
+  bool CellMatchesFilters() const;
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
 
   std::shared_ptr<rocksdb::TransactionDB> db_;
-  std::shared_ptr<StringRangeSet const> row_set_;
+
+  std::shared_ptr<StringRangeSet const> row_ranges_;
+  std::vector<std::shared_ptr<re2::RE2 const>> row_regexes_;
+  mutable StringRangeSet column_ranges_;
+  std::vector<std::shared_ptr<re2::RE2 const>> column_regexes_;
+  mutable TimestampRangeSet timestamp_ranges_;
+
   mutable bool initialized_{false};
   mutable std::unique_ptr<rocksdb::Iterator> it_;
   mutable std::string curr_value_string_;
