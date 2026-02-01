@@ -105,6 +105,7 @@ class StringRangeSet {
   static StringRangeSet Empty();
   void Sum(Range inserted_range);
   void Intersect(Range const& intersected_range);
+  bool Contains(Range::Value const& value) const;
 
   std::set<Range, Range::StartLess> const& disjoint_ranges() const {
     return disjoint_ranges_;
@@ -176,6 +177,7 @@ class TimestampRangeSet {
   static TimestampRangeSet Empty();
   void Sum(Range inserted_range);
   void Intersect(Range const& intersected_range);
+  bool Contains(Range::Value const& value) const;
 
   std::set<Range, Range::StartLess> const& disjoint_ranges() const {
     return disjoint_ranges_;

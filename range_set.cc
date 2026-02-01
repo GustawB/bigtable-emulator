@@ -454,6 +454,16 @@ void StringRangeSet::Intersect(StringRangeSet::Range const& intersected_range) {
   detail::RangeSetIntersectImpl(disjoint_ranges_, intersected_range);
 }
 
+bool StringRangeSet::Contains(Range::Value const& value) const {
+  StringRangeSet::Range probe_range(value, false, value, false);
+  auto it = disjoint_ranges_.upper_bound(probe_range);
+  if (it == disjoint_ranges_.begin()) {
+    return false;
+  }
+  --it;
+  return it->IsWithin(value);
+}
+
 bool operator==(StringRangeSet::Range::Value const& lhs,
                 StringRangeSet::Range::Value const& rhs) {
   if (absl::holds_alternative<StringRangeSet::Range::Infinity>(lhs)) {
@@ -554,6 +564,16 @@ void TimestampRangeSet::Sum(TimestampRangeSet::Range inserted_range) {
 void TimestampRangeSet::Intersect(
     TimestampRangeSet::Range const& intersected_range) {
   detail::RangeSetIntersectImpl(disjoint_ranges_, intersected_range);
+}
+
+bool TimestampRangeSet::Contains(Range::Value const& value) const {
+  TimestampRangeSet::Range probe_range(value, value);
+  auto it = disjoint_ranges_.upper_bound(probe_range);
+  if (it == disjoint_ranges_.begin()) {
+    return false;
+  }
+  --it;
+  return it->IsWithin(value);
 }
 
 bool operator==(TimestampRangeSet::Range const& lhs,
