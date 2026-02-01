@@ -576,9 +576,6 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     if (it_->Valid()) {
       curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
       curr_value_string_ = it_->value().ToString();
-    } else {
-      // TODO: remove debug print
-      std::cout << it_->status().ToString() << std::endl;
     }
   }
 }
@@ -599,7 +596,7 @@ PersistentColumnFamily::ConstructAggregateColumnFamily(
     google::bigtable::admin::v2::Type const& value_type,
     std::shared_ptr<rocksdb::TransactionDB> db_, std::string const& name) {
   rocksdb::ColumnFamilyOptions opts;
-  auto maybe_cf = PersistentColumnFamily::Create(std::move(db_), opts, name);
+  auto maybe_cf = Create(std::move(db_), opts, name);
   if (!maybe_cf) {
     return InternalError(
         "Failed to create aggregate persistent column family: " +

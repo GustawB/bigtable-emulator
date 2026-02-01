@@ -41,8 +41,8 @@ TEST(KeyCoderTest, NullBytesHandling) {
 }
 
 TEST(KeyCoderTest, KeySortingWorks) {
-  auto key_old = KeyCoder::Encode("row1", "col1", 1000); // Older
-  auto key_new = KeyCoder::Encode("row1", "col1", 2000); // Newer
+  auto key_old = KeyCoder::Encode("row1", "col1", 1000);  // Older
+  auto key_new = KeyCoder::Encode("row1", "col1", 2000);  // Newer
 
   EXPECT_LT(key_new, key_old);
 
@@ -64,15 +64,18 @@ TEST(KeyCoderTest, PartialEncodeMatchesPrefix) {
 TEST(KeyCoderTest, RejectInvalidKeys) {
   std::string bad_key = "row\0\xFFcol\0\xFF";
   auto res = KeyCoder::Decode(bad_key);
-  EXPECT_THAT(res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
+  EXPECT_THAT(
+      res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
 
   std::string short_ts = bad_key + "FFFF";
   res = KeyCoder::Decode(short_ts);
-  EXPECT_THAT(res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
+  EXPECT_THAT(
+      res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
 
   std::string broken_esc = "row\0";
   res = KeyCoder::Decode(broken_esc);
-  EXPECT_THAT(res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
+  EXPECT_THAT(
+      res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
 }
 
 TEST(KeyCoderTest, RejectNonHexTimestamp) {
@@ -86,7 +89,8 @@ TEST(KeyCoderTest, RejectNonHexTimestamp) {
   manual_key.append("ZZZZZZZZZZZZZZZZ");
 
   auto res = KeyCoder::Decode(manual_key);
-  EXPECT_THAT(res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
+  EXPECT_THAT(
+      res, StatusIs(StatusCode::kInternal, HasSubstr("Failed to decode key")));
 }
 
 }  // namespace

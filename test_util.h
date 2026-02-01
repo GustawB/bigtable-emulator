@@ -41,7 +41,22 @@ Status SetCells(
     std::vector<SetCellParams>& set_cell_params);
 
 StatusOr<std::shared_ptr<Table>> CreateTable(
-    std::string const& table_name, std::vector<std::string>& column_families);
+    std::string const& table_name, std::vector<std::string>& column_families,
+    bool should_persist);
+
+void DeletePersistentDB();
+
+Status HasPersistentCell(
+    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
+    std::string const& column_family, std::string const& row_key,
+    std::string const& column_qualifier, int64_t timestamp_micros,
+    std::string const& value);
+
+Status HasInMemoryCell(
+    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
+    std::string const& column_family, std::string const& row_key,
+    std::string const& column_qualifier, int64_t timestamp_micros,
+    std::string const& value);
 
 }  // namespace emulator
 }  // namespace bigtable

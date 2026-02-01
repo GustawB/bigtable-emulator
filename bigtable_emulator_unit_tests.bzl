@@ -18,9 +18,9 @@ bigtable_emulator_unit_tests = [
     "drop_row_range_test.cc",
     "filter_test.cc",
     "filtered_map_test.cc",
+    "key_coder_test.cc",
     "mutations_test.cc",
     "range_set_test.cc",
     "server_test.cc",
     "table_test.cc",
-    "key_coder_test.cc",
 ]

@@ -4,11 +4,11 @@
 #include "google/cloud/testing_util/status_matchers.h"
 #include "absl/strings/str_format.h"
 #include "table.h"
+#include "test_util.h"
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/v2/bigtable.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <gtest/gtest.h>
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -18,157 +18,6 @@ namespace google {
 namespace cloud {
 namespace bigtable {
 namespace emulator {
-
-struct SetCellParams {
-  std::string column_family_name;
-  std::string column_qualifier;
-  int64_t timestamp_micros;
-  std::string data;
-};
-
-StatusOr<std::shared_ptr<Table>> CreateTable(
-    std::string const& table_name, std::vector<std::string>& column_families, bool should_persist) {
-  ::google::bigtable::admin::v2::Table schema;
-  schema.set_name(table_name);
-  for (auto& column_family_name : column_families) {
-    (*schema.mutable_column_families())[column_family_name] =
-        ::google::bigtable::admin::v2::ColumnFamily();
-  }
-  return Table::Create(schema, should_persist, "/tmp/");
-}
-
-Status HasInMemoryCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
-               std::string const& column_family, std::string const& row_key,
-               std::string const& column_qualifier, int64_t timestamp_micros,
-               std::string const& value) {
-  auto utilities =
-      std::static_pointer_cast<InMemoryTableOperations>(table->GetUtilities());
-  auto column_family_it = utilities->find(column_family);
-  if (column_family_it == utilities->end()) {
-    return NotFoundError(
-        "column family not found in table",
-        GCP_ERROR_INFO().WithMetadata("column family", column_family));
-  }
-
-  auto const& cf =
-      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
-  auto column_family_row_it = cf->find(row_key);
-  if (column_family_row_it == cf->end()) {
-    return NotFoundError("no row key found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("row key", row_key)
-                             .WithMetadata("column family", column_family));
-  }
-
-  auto& column_family_row = column_family_row_it->second;
-  auto column_row_it = column_family_row.find(column_qualifier);
-  if (column_row_it == column_family_row.end()) {
-    return NotFoundError(
-        "no column found with qualifier",
-        GCP_ERROR_INFO().WithMetadata("column qualifier", column_qualifier));
-  }
-
-  auto& column_row = column_row_it->second;
-  auto timestamp_it =
-      column_row.find(std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::microseconds(timestamp_micros)));
-  if (timestamp_it == column_row.end()) {
-    return NotFoundError(
-        "timestamp not found",
-        GCP_ERROR_INFO().WithMetadata("timestamp",
-                                      absl::StrFormat("%d", timestamp_micros)));
-  }
-
-  if (timestamp_it->second != value) {
-    return NotFoundError("wrong value",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("expected", value)
-                             .WithMetadata("found", timestamp_it->second));
-  }
-
-  return Status();
-}
-
-Status HasPersistentCell(std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
-           std::string const& column_family, std::string const& row_key,
-           std::string const& column_qualifier, int64_t timestamp_micros,
-           std::string const& value) {
-  auto utilities =
-      std::static_pointer_cast<PersistentTableOperations>(table->GetUtilities());
-  auto column_family_it = utilities->find(column_family);
-  if (column_family_it == utilities->end()) {
-    return NotFoundError(
-        "column family not found in table",
-        GCP_ERROR_INFO().WithMetadata("column family", column_family));
-  }
-
-  auto const& cf =
-      std::static_pointer_cast<PersistentColumnFamily>(column_family_it->second);
-
-
-    auto encoded_key = KeyCoder::Encode(row_key, column_qualifier, timestamp_micros);
-    auto iter = utilities->GetIterator(cf);
-    iter->Seek(encoded_key);
-    if (!iter->Valid()) {
-        return NotFoundError("no row + column combo found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("row key", row_key)
-                             .WithMetadata("column qualifier", column_qualifier)
-                             .WithMetadata("column family", column_family));
-    }
-
-    auto key = iter->key();
-    auto decoded_key = KeyCoder::Decode(key.ToString());
-    if (decoded_key->row != row_key) {
-        return NotFoundError("no row found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("column qualifier", column_qualifier)
-                             .WithMetadata("column family", column_family));
-    } else if (decoded_key->col != column_qualifier) {
-        return NotFoundError("no column found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("column qualifier", column_qualifier)
-                             .WithMetadata("column family", column_family));
-    } else if (decoded_key->timestamp != static_cast<uint64_t>(timestamp_micros)) {
-        return NotFoundError(
-        "timestamp not found",
-        GCP_ERROR_INFO().WithMetadata("expected timestamp",
-                                      absl::StrFormat("%d", timestamp_micros))
-                                      .WithMetadata("actual timestamp", absl::StrFormat("%d", decoded_key->timestamp)));
-    } else if (iter->value() != value) {
-        return NotFoundError("wrong value",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("expected", value)
-                             .WithMetadata("found", absl::StrFormat("%d", decoded_key->timestamp)));
-    } else {
-        return Status();
-    }
-}
-
-Status SetCells(
-    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
-    std::string const& table_name, std::string const& row_key,
-    std::vector<SetCellParams>& set_cell_params) {
-  ::google::bigtable::v2::MutateRowRequest mutation_request;
-  mutation_request.set_table_name(table_name);
-  mutation_request.set_row_key(row_key);
-
-  for (auto m : set_cell_params) {
-    auto* mutation_request_mutation = mutation_request.add_mutations();
-    auto* set_cell_mutation = mutation_request_mutation->mutable_set_cell();
-    set_cell_mutation->set_family_name(m.column_family_name);
-    set_cell_mutation->set_column_qualifier(m.column_qualifier);
-    set_cell_mutation->set_timestamp_micros(m.timestamp_micros);
-    set_cell_mutation->set_value(m.data);
-  }
-
-  return table->MutateRow(mutation_request);
-}
-
-void DeletePersistentDB() {
-    std::filesystem::path target = "/tmp/projects";
-    std::filesystem::remove_all(target);
-}
 
 TEST(InMemoryConditionalMutations, TestTrueMutations) {
   auto const* const table_name = "projects/test/instances/test/tables/test";
@@ -208,8 +57,8 @@ TEST(InMemoryConditionalMutations, TestTrueMutations) {
       {column_family_name, "column_2", 1000, "some_value"}};
   ASSERT_STATUS_OK(SetCells(table, table_name, row_key, v));
   ASSERT_STATUS_OK(HasInMemoryCell(table, v[0].column_family_name, row_key,
-                           v[0].column_qualifier, v[0].timestamp_micros,
-                           v[0].data));
+                                   v[0].column_qualifier, v[0].timestamp_micros,
+                                   v[0].data));
 
   google::bigtable::v2::CheckAndMutateRowRequest cond_mut_with_pass_all;
 
@@ -226,12 +75,14 @@ TEST(InMemoryConditionalMutations, TestTrueMutations) {
 
   // pass_all_filter means that true_mutation should have succeeded,
   // so check for the true_mutation cell value e.t.c.
-  ASSERT_STATUS_OK(HasInMemoryCell(table, column_family_name, row_key, column_qualifier,
-                           timestamp_micros, true_mutation_value));
+  ASSERT_STATUS_OK(HasInMemoryCell(table, column_family_name, row_key,
+                                   column_qualifier, timestamp_micros,
+                                   true_mutation_value));
 
   // And just for good measure, ensure that false_mutation was not written.
-  ASSERT_EQ(false, HasInMemoryCell(table, column_family_name, row_key, column_qualifier,
-                           timestamp_micros, false_mutation_value)
+  ASSERT_EQ(false, HasInMemoryCell(table, column_family_name, row_key,
+                                   column_qualifier, timestamp_micros,
+                                   false_mutation_value)
                        .ok());
 }
 
@@ -326,8 +177,8 @@ TEST(PersistentConditionalMutations, TestTrueMutations) {
       {column_family_name, "column_2", 1000, "some_value"}};
   ASSERT_STATUS_OK(SetCells(table, table_name, row_key, v));
   ASSERT_STATUS_OK(HasPersistentCell(table, v[0].column_family_name, row_key,
-                           v[0].column_qualifier, v[0].timestamp_micros,
-                           v[0].data));
+                                     v[0].column_qualifier,
+                                     v[0].timestamp_micros, v[0].data));
 
   google::bigtable::v2::CheckAndMutateRowRequest cond_mut_with_pass_all;
 
@@ -344,15 +195,17 @@ TEST(PersistentConditionalMutations, TestTrueMutations) {
 
   // pass_all_filter means that true_mutation should have succeeded,
   // so check for the true_mutation cell value e.t.c.
-  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key, column_qualifier,
-                           timestamp_micros, true_mutation_value));
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+                                     column_qualifier, timestamp_micros,
+                                     true_mutation_value));
 
   // And just for good measure, ensure that false_mutation was not written.
-  ASSERT_EQ(false, HasPersistentCell(table, column_family_name, row_key, column_qualifier,
-                           timestamp_micros, false_mutation_value)
+  ASSERT_EQ(false, HasPersistentCell(table, column_family_name, row_key,
+                                     column_qualifier, timestamp_micros,
+                                     false_mutation_value)
                        .ok());
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 TEST(PersistentConditionalMutations, RejectInvalidRequest) {
@@ -408,7 +261,7 @@ TEST(PersistentConditionalMutations, RejectInvalidRequest) {
   cond_mutation_no_row_key.set_table_name(table_name);
   ASSERT_EQ(false, table->CheckAndMutateRow(cond_mutation_no_mutations).ok());
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 }  // namespace emulator
