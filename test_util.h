@@ -58,6 +58,14 @@ Status HasInMemoryCell(
     std::string const& column_qualifier, int64_t timestamp_micros,
     std::string const& value);
 
+Status HasInMemoryRow(
+    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
+    std::string const& column_family, std::string const& row_key);
+
+Status HasPersistentRow(
+    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
+    std::string const& column_family, std::string const& row_key);
+
 }  // namespace emulator
 }  // namespace bigtable
 }  // namespace cloud

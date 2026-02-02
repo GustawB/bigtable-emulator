@@ -307,66 +307,6 @@ StatusOr<std::map<std::chrono::milliseconds, std::string>> GetPersistentColumn(
   return ret;
 }
 
-Status HasInMemoryRow(
-    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
-    std::string const& column_family, std::string const& row_key) {
-  auto utilities =
-      std::static_pointer_cast<InMemoryTableOperations>(table->GetUtilities());
-  auto column_family_it = utilities->find(column_family);
-  if (column_family_it == utilities->end()) {
-    return NotFoundError(
-        "column family not found in table",
-        GCP_ERROR_INFO().WithMetadata("column family", column_family));
-  }
-
-  auto const& cf =
-      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
-  auto column_family_row_it = cf->find(row_key);
-  if (column_family_row_it == cf->end()) {
-    return NotFoundError("row key not found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("row key", row_key)
-                             .WithMetadata("column family", column_family));
-  }
-
-  return Status();
-}
-
-Status HasPersistentRow(
-    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
-    std::string const& column_family, std::string const& row_key) {
-  auto utilities = std::static_pointer_cast<PersistentTableOperations>(
-      table->GetUtilities());
-  auto column_family_it = utilities->find(column_family);
-  if (column_family_it == utilities->end()) {
-    return NotFoundError(
-        "column family not found in table",
-        GCP_ERROR_INFO().WithMetadata("column family", column_family));
-  }
-
-  auto const& cf = std::static_pointer_cast<PersistentColumnFamily>(
-      column_family_it->second);
-  auto iter = utilities->GetIterator(cf);
-  iter->Seek(row_key);
-  if (!iter->Valid()) {
-    return NotFoundError("row key not found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("row key", row_key)
-                             .WithMetadata("column family", column_family));
-  }
-
-  auto key = iter->key();
-  auto decoded_key = KeyCoder::Decode(key.ToString());
-  if (decoded_key->row != row_key) {
-    return NotFoundError("no row found in column family",
-                         GCP_ERROR_INFO()
-                             .WithMetadata("row key", row_key)
-                             .WithMetadata("column family", column_family));
-  }
-
-  return Status();
-}
-
 StatusOr<google::bigtable::v2::Column> GetResponseColumn(
     google::bigtable::v2::ReadModifyWriteRowResponse const& resp,
     std::string const& row_key, int family_index, std::string const& qual) {
@@ -623,9 +563,8 @@ TEST(PersistentTransactionRollback, ZeroOrNegativeTimestampHandling) {
   ASSERT_EQ(cell_it->second, v[0].data);
   ASSERT_GE(cell_it->first, system_time_ms_before);
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
-
 
 // Does the SetCell mutation work to set a cell to a specific value?
 TEST(InMemoryTransactionRollback, SetCellBasicFunction) {
@@ -659,35 +598,35 @@ TEST(InMemoryTransactionRollback, SetCellBasicFunction) {
 }
 
 TEST(PersistentTransactionRollback, SetCellBasicFunction) {
-    ::google::bigtable::admin::v2::Table schema;
-    ::google::bigtable::admin::v2::ColumnFamily column_family;
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-    auto const* const table_name = "projects/test/instances/test/tables/test";
-    auto const* const row_key = "0";
-    auto const* const column_family_name = "test";
-    auto const* const column_qualifier = "test";
-    auto const timestamp_micros = 1234;
-    auto const* data = "test";
+  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  auto const* const column_family_name = "test";
+  auto const* const column_qualifier = "test";
+  auto const timestamp_micros = 1234;
+  auto const* data = "test";
 
-    std::vector<std::string> column_families = {column_family_name};
-    auto maybe_table = CreateTable(table_name, column_families, true);
+  std::vector<std::string> column_families = {column_family_name};
+  auto maybe_table = CreateTable(table_name, column_families, true);
 
-    ASSERT_STATUS_OK(maybe_table);
-    auto table = maybe_table.value();
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
 
-    std::vector<SetCellParams> v;
-    SetCellParams p = {column_family_name, column_qualifier, timestamp_micros,
-                       data};
-    v.push_back(p);
+  std::vector<SetCellParams> v;
+  SetCellParams p = {column_family_name, column_qualifier, timestamp_micros,
+                     data};
+  v.push_back(p);
 
-    auto status = SetCells(table, table_name, row_key, v);
+  auto status = SetCells(table, table_name, row_key, v);
 
-    ASSERT_STATUS_OK(status);
+  ASSERT_STATUS_OK(status);
 
-    ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, timestamp_micros, data));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that an old value is correctly restored in a pre-populated
@@ -814,7 +753,7 @@ TEST(PersistentTransactionRollback, TestRestoreValue) {
       table, valid_column_family_name, row_key, column_qualifier,
       good_mutation_timestamp_micros, good_mutation_data));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that a new cell introduced in a chain of SetCell mutations is
@@ -895,8 +834,8 @@ TEST(PersistentTransactionRollback, DeleteValue) {
   auto status = SetCells(table, table_name, row_key, v);
   ASSERT_STATUS_OK(status);
   ASSERT_STATUS_OK(HasPersistentCell(table, valid_column_family_name, row_key,
-                                   v[0].column_qualifier, v[0].timestamp_micros,
-                                   v[0].data));
+                                     v[0].column_qualifier,
+                                     v[0].timestamp_micros, v[0].data));
 
   // We then setup a transaction chain with 2 SetCells, the first one
   // should succeed to add a new cell and the second one should fail
@@ -910,17 +849,17 @@ TEST(PersistentTransactionRollback, DeleteValue) {
   status = SetCells(table, table_name, row_key, v);
   ASSERT_NE(status.ok(), true);  // We expect the chain of mutations to
                                  // fail altogether.
-  status =
-      HasPersistentCell(table, v[0].column_family_name, row_key,
-                      v[0].column_qualifier, v[0].timestamp_micros, v[0].data);
+  status = HasPersistentCell(table, v[0].column_family_name, row_key,
+                             v[0].column_qualifier, v[0].timestamp_micros,
+                             v[0].data);
   ASSERT_NE(status.ok(), true);  // Undo should delete the cell
-  status =
-      HasPersistentCell(table, v[1].column_family_name, row_key,
-                      v[1].column_qualifier, v[1].timestamp_micros, v[1].data);
+  status = HasPersistentCell(table, v[1].column_family_name, row_key,
+                             v[1].column_qualifier, v[1].timestamp_micros,
+                             v[1].data);
   ASSERT_NE(status.ok(), true);  // Also the SetCell with invalid shema
                                  // should not have set anything.
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that if a successful SetCell mutation in a chain of SetCell
@@ -997,8 +936,8 @@ TEST(PersistentTransactionRollback, DeleteColumn) {
   auto status = SetCells(table, table_name, row_key, v);
   ASSERT_STATUS_OK(status);
   ASSERT_STATUS_OK(HasPersistentCell(table, valid_column_family_name, row_key,
-                                   v[0].column_qualifier, v[0].timestamp_micros,
-                                   v[0].data));
+                                     v[0].column_qualifier,
+                                     v[0].timestamp_micros, v[0].data));
 
   // Introduce a new column in a chain of SetCell mutations, a
   // subsequent one of which must fail due to an invalid schema
@@ -1012,15 +951,16 @@ TEST(PersistentTransactionRollback, DeleteColumn) {
                     // fail altogether because the last one must fail.
 
   // The original column ("test") should still exist.
-  status = HasPersistentColumn(table, valid_column_family_name, row_key, "test");
+  status =
+      HasPersistentColumn(table, valid_column_family_name, row_key, "test");
   ASSERT_STATUS_OK(status);
 
   // Bit the new column introduced should have been rolled back.
   status = HasPersistentColumn(table, v[0].column_family_name, row_key,
-                             v[0].column_qualifier);
+                               v[0].column_qualifier);
   ASSERT_NE(status.ok(), true);
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that a chain of SetCell mutations that initially introduces a
@@ -1061,41 +1001,40 @@ TEST(InMemoryTransactionRollback, DeleteRow) {
 }
 
 TEST(PersistentTransactionRollback, DeleteRow) {
-    ::google::bigtable::admin::v2::Table schema;
-    ::google::bigtable::admin::v2::ColumnFamily column_family;
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-    auto const* const table_name = "projects/test/instances/test/tables/test";
-    auto const* const row_key = "0";
-    // The table will be set up with a schema with
-    // valid_column_family_name and mutations with this column family
-    // name are expected to succeed. We will simulate a transaction
-    // failure by setting some other not-pre-provisioned column family
-    // name.
-    auto const* const valid_column_family_name = "test";
-    std::vector<std::string> column_families = {valid_column_family_name};
-    auto maybe_table = CreateTable(table_name, column_families, true);
-    ASSERT_STATUS_OK(maybe_table);
-    auto table = maybe_table.value();
+  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  // The table will be set up with a schema with
+  // valid_column_family_name and mutations with this column family
+  // name are expected to succeed. We will simulate a transaction
+  // failure by setting some other not-pre-provisioned column family
+  // name.
+  auto const* const valid_column_family_name = "test";
+  std::vector<std::string> column_families = {valid_column_family_name};
+  auto maybe_table = CreateTable(table_name, column_families, true);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
 
-    // First SetCell should succeed and introduce a new row with key
-    // "0". The second one will fail due to bad schema settings. We
-    // expect not to find the row after the row mutation call returns.
-    std::vector<SetCellParams> v = {
-        {valid_column_family_name, "test", 1000, "data"},
-        {"invalid_column_family_name", "test", 2000,
-         "more new data which should never be written"}};
+  // First SetCell should succeed and introduce a new row with key
+  // "0". The second one will fail due to bad schema settings. We
+  // expect not to find the row after the row mutation call returns.
+  std::vector<SetCellParams> v = {
+      {valid_column_family_name, "test", 1000, "data"},
+      {"invalid_column_family_name", "test", 2000,
+       "more new data which should never be written"}};
 
-    auto status = SetCells(table, table_name, row_key, v);
-    ASSERT_NE(status.ok(),
-              true);  // We expect the chain of mutations to
-    // fail altogether because the last one must fail.
+  auto status = SetCells(table, table_name, row_key, v);
+  ASSERT_NE(status.ok(),
+            true);  // We expect the chain of mutations to
+  // fail altogether because the last one must fail.
 
-    status = HasPersistentRow(table, valid_column_family_name, row_key);
-    ASSERT_NE(status.ok(), true);
+  status = HasPersistentRow(table, valid_column_family_name, row_key);
+  ASSERT_NE(status.ok(), true);
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
-
 
 // Does the DeleteFromfamily mutation work to delete a row from a
 // specific family and does it rows with the same row key in other
@@ -1148,7 +1087,7 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyBasicFunction) {
             HasInMemoryRow(table, second_column_family_name, row_key).ok());
 }
 
-    // TODO: Uncomment when implemented
+// TODO: Uncomment when implemented
 /*
 TEST(PersistentTransactionRollback, DeleteFromFamilyBasicFunction) {
     ::google::bigtable::admin::v2::Table schema;
@@ -1183,8 +1122,9 @@ TEST(PersistentTransactionRollback, DeleteFromFamilyBasicFunction) {
     ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, timestamp_micros, data));
     ASSERT_STATUS_OK(
-        HasInMemoryColumn(table, column_family_name, row_key, column_qualifier));
-    ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name, row_key));
+        HasInMemoryColumn(table, column_family_name, row_key,
+column_qualifier)); ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name,
+row_key));
 
     // Having established that the data is there, test the basic
     // functionality of the DeleteFromFamily mutation by trying to
@@ -1293,8 +1233,9 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyRollback) {
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                    column_qualifier, timestamp_micros, data));
   ASSERT_STATUS_OK(
-      HasPersistentColumn(table, column_family_name, row_key, column_qualifier));
-  ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name, row_key));
+      HasPersistentColumn(table, column_family_name, row_key,
+column_qualifier)); ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name,
+row_key));
 
   // Setup two DeleteFromfamily mutation: The first one uses the
   // correct table schema (a column family that exists and is expected
@@ -1312,8 +1253,9 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyRollback) {
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                    column_qualifier, timestamp_micros, data));
   ASSERT_STATUS_OK(
-      HasPersistentColumn(table, column_family_name, row_key, column_qualifier));
-  ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name, row_key));
+      HasPersistentColumn(table, column_family_name, row_key,
+column_qualifier)); ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name,
+row_key));
 
     DeletePersistentDB();
 }*/
@@ -1371,47 +1313,47 @@ TEST(InMemoryTransactionRollback, DeleteFromColumnBasicFunction) {
 }
 
 TEST(PersistentTransactionRollback, DeleteFromColumnBasicFunction) {
-    ::google::bigtable::admin::v2::Table schema;
-    ::google::bigtable::admin::v2::ColumnFamily column_family;
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-    auto const* const table_name = "projects/test/instances/test/tables/test";
-    auto const* const row_key = "0";
-    auto const* const column_family_name = "test";
-    auto const* const column_qualifier = "test";
-    auto const* data = "test";
+  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  auto const* const column_family_name = "test";
+  auto const* const column_qualifier = "test";
+  auto const* data = "test";
 
-    std::vector<std::string> column_families = {column_family_name};
-    auto maybe_table = CreateTable(table_name, column_families, true);
+  std::vector<std::string> column_families = {column_family_name};
+  auto maybe_table = CreateTable(table_name, column_families, true);
 
-    ASSERT_STATUS_OK(maybe_table);
-    auto table = maybe_table.value();
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
 
-    std::vector<SetCellParams> v = {
-        {column_family_name, column_qualifier, 1000, data},
-        {column_family_name, column_qualifier, 2000, data},
-        {column_family_name, column_qualifier, 3000, data},
-    };
+  std::vector<SetCellParams> v = {
+      {column_family_name, column_qualifier, 1000, data},
+      {column_family_name, column_qualifier, 2000, data},
+      {column_family_name, column_qualifier, 3000, data},
+  };
 
-    auto status = SetCells(table, table_name, row_key, v);
-    ASSERT_STATUS_OK(status);
-    ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+  auto status = SetCells(table, table_name, row_key, v);
+  ASSERT_STATUS_OK(status);
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, 1000, data));
-    ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, 2000, data));
-    ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, 3000, data));
 
-    std::vector<DeleteFromColumnParams> dv = {
-        {column_family_name, column_qualifier,
-         NewTimestampRange(v[0].timestamp_micros, v[2].timestamp_micros + 1000)}};
+  std::vector<DeleteFromColumnParams> dv = {
+      {column_family_name, column_qualifier,
+       NewTimestampRange(v[0].timestamp_micros, v[2].timestamp_micros + 1000)}};
 
-    ASSERT_STATUS_OK(DeleteFromColumns(table, table_name, row_key, dv));
+  ASSERT_STATUS_OK(DeleteFromColumns(table, table_name, row_key, dv));
 
-    status =
-        HasPersistentColumn(table, column_family_name, row_key, column_qualifier);
-    ASSERT_NE(Status(), status);
+  status =
+      HasPersistentColumn(table, column_family_name, row_key, column_qualifier);
+  ASSERT_NE(Status(), status);
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Does DeleteFromColumn rollback work?
@@ -1502,11 +1444,11 @@ TEST(PersistentTransactionRollback, DeleteFromColumnRollback) {
   auto status = SetCells(table, table_name, row_key, v);
   ASSERT_STATUS_OK(status);
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                   column_qualifier, 1000, data));
+                                     column_qualifier, 1000, data));
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                   column_qualifier, 2000, data));
+                                     column_qualifier, 2000, data));
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                   column_qualifier, 3000, data));
+                                     column_qualifier, 3000, data));
 
   // The first mutation will succeed. The second assumes a schema that
   // does not exist - it should fail and cause rollback of the column
@@ -1520,17 +1462,17 @@ TEST(PersistentTransactionRollback, DeleteFromColumnRollback) {
   ASSERT_EQ(false, DeleteFromColumns(table, table_name, row_key, dv).ok());
 
   // The column should have been restored.
-  ASSERT_STATUS_OK(
-      HasPersistentColumn(table, column_family_name, row_key, column_qualifier));
+  ASSERT_STATUS_OK(HasPersistentColumn(table, column_family_name, row_key,
+                                       column_qualifier));
   // Check that the data is where and what we expect.
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                   column_qualifier, 1000, data));
+                                     column_qualifier, 1000, data));
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                   column_qualifier, 2000, data));
+                                     column_qualifier, 2000, data));
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                   column_qualifier, 3000, data));
+                                     column_qualifier, 3000, data));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Can we delete a row from all column families?
@@ -1616,9 +1558,9 @@ TEST(InMemoryTransactionRollback, DeleteFromRowBasicFunction) {
   ASSERT_STATUS_OK(status);
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                    column_qualifier, timestamp_micros, data));
-  ASSERT_STATUS_OK(HasPersistentColumn(table, second_column_family_name, row_key,
-                                     column_qualifier));
-  ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name, row_key));
+  ASSERT_STATUS_OK(HasPersistentColumn(table, second_column_family_name,
+row_key, column_qualifier)); ASSERT_STATUS_OK(HasPersistentRow(table,
+column_family_name, row_key));
 
   ::google::bigtable::v2::MutateRowRequest mutation_request;
   mutation_request.set_table_name(table_name);
@@ -1631,16 +1573,16 @@ TEST(InMemoryTransactionRollback, DeleteFromRowBasicFunction) {
   ASSERT_EQ(false, HasPersistentCell(table, column_family_name, row_key,
                                    column_qualifier, timestamp_micros, data)
                        .ok());
-  ASSERT_EQ(false, HasPersistentColumn(table, second_column_family_name, row_key,
-                                     column_qualifier)
-                       .ok());
+  ASSERT_EQ(false, HasPersistentColumn(table, second_column_family_name,
+row_key, column_qualifier) .ok());
 
 DeletePersistentDB();
 }*/
 
 // Does AddToCell reject requests to add to a cell in a column family
 // not provisioned for aggregation?
-TEST(InMemoryTransactionRollback, AddToCellRejectsRequestsToNonAggregateColumnFamily) {
+TEST(InMemoryTransactionRollback,
+     AddToCellRejectsRequestsToNonAggregateColumnFamily) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
@@ -1678,44 +1620,46 @@ TEST(InMemoryTransactionRollback, AddToCellRejectsRequestsToNonAggregateColumnFa
   ASSERT_EQ(false, table->MutateRow(mutation_request).ok());
 }
 
-TEST(PersistentTransactionRollback, AddToCellRejectsRequestsToNonAggregateColumnFamily) {
-    ::google::bigtable::admin::v2::Table schema;
-    ::google::bigtable::admin::v2::ColumnFamily column_family;
+TEST(PersistentTransactionRollback,
+     AddToCellRejectsRequestsToNonAggregateColumnFamily) {
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-    auto const* const table_name = "projects/test/instances/test/tables/test";
-    auto const* const row_key = "0";
-    auto const* const column_family_name = "column_family_1";
-    auto const* const column_qualifier = "column_qualifier";
-    auto const timestamp_micros = 1000;
+  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  auto const* const column_family_name = "column_family_1";
+  auto const* const column_qualifier = "column_qualifier";
+  auto const timestamp_micros = 1000;
 
-    auto maybe_table = Table::Create(
-        CreateSchema(table_name, {{column_family_name, column_family}}), true, "/tmp/");
+  auto maybe_table = Table::Create(
+      CreateSchema(table_name, {{column_family_name, column_family}}), true,
+      "/tmp/");
 
-    ASSERT_STATUS_OK(maybe_table);
-    auto table = maybe_table.value();
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
 
-    ::google::bigtable::v2::MutateRowRequest mutation_request;
-    mutation_request.set_table_name(table_name);
-    mutation_request.set_row_key(row_key);
+  ::google::bigtable::v2::MutateRowRequest mutation_request;
+  mutation_request.set_table_name(table_name);
+  mutation_request.set_row_key(row_key);
 
-    auto* mutation_request_mutation = mutation_request.add_mutations();
-    auto* add_to_cell_mutation = mutation_request_mutation->mutable_add_to_cell();
+  auto* mutation_request_mutation = mutation_request.add_mutations();
+  auto* add_to_cell_mutation = mutation_request_mutation->mutable_add_to_cell();
 
-    add_to_cell_mutation->set_family_name(column_family_name);
-    auto* mutable_column_qualifier =
-        add_to_cell_mutation->mutable_column_qualifier();
-    mutable_column_qualifier->set_raw_value(column_qualifier);
-    auto* mutable_timestamp = add_to_cell_mutation->mutable_timestamp();
-    mutable_timestamp->set_raw_timestamp_micros(timestamp_micros);
-    auto* mutable_input = add_to_cell_mutation->mutable_input();
-    mutable_input->set_int_value(100);
+  add_to_cell_mutation->set_family_name(column_family_name);
+  auto* mutable_column_qualifier =
+      add_to_cell_mutation->mutable_column_qualifier();
+  mutable_column_qualifier->set_raw_value(column_qualifier);
+  auto* mutable_timestamp = add_to_cell_mutation->mutable_timestamp();
+  mutable_timestamp->set_raw_timestamp_micros(timestamp_micros);
+  auto* mutable_input = add_to_cell_mutation->mutable_input();
+  mutable_input->set_int_value(100);
 
-    // Should fail because `column_family' has not been provisioned for
-    // aggregation. i.e. its value_type is not set all, in this case (it
-    // would need to be set to `Aggregate'.
-    ASSERT_NE(Status(), table->MutateRow(mutation_request));
+  // Should fail because `column_family' has not been provisioned for
+  // aggregation. i.e. its value_type is not set all, in this case (it
+  // would need to be set to `Aggregate'.
+  ASSERT_NE(Status(), table->MutateRow(mutation_request));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test basic functionality of AddToCell Sum aggregation.
@@ -1839,7 +1783,7 @@ TEST(PersistentTransactionRollback, AddToCellTestSum) {
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(250)));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test basic functionality of AddToCell Max aggregation.
@@ -1940,7 +1884,7 @@ TEST(PersistentTransactionRollback, AddToCellTestMax) {
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(200)));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test basic functionality of AddToCell Min aggregation.
@@ -2043,7 +1987,7 @@ TEST(PersistentTransactionRollback, AddToCellTestMin) {
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(50)));
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that ReadModifyWrite does the correct thing when the row
@@ -2189,7 +2133,8 @@ TEST(PersistentReadModifyWrite, Unsetcase) {
             system_time_ms_before);
   ASSERT_EQ(col.cells(0).value(), "a string");
 
-  auto maybe_cells = GetPersistentColumn(table, "column_family", "0", "column_1");
+  auto maybe_cells =
+      GetPersistentColumn(table, "column_family", "0", "column_1");
   ASSERT_STATUS_OK(maybe_cells);
   auto& cells = maybe_cells.value();
   ASSERT_EQ(cells.size(), 1);
@@ -2207,7 +2152,7 @@ TEST(PersistentReadModifyWrite, Unsetcase) {
   ASSERT_GE(cell_it->first, system_time_ms_before);
   ASSERT_EQ(cell_it->second, "a string");
 
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2391,19 +2336,20 @@ TEST(PersistentReadModifyWrite, SetAndNewerTimestampCase) {
                                       static_cast<std::int64_t>(201)));
 
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
-                                   far_future_us, "older"));
+                                     far_future_us, "older"));
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
-                                   far_future_us_latest, "latest_with_suffix"));
+                                     far_future_us_latest,
+                                     "latest_with_suffix"));
 
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_2",
-                                   far_future_us,
-                                   ::google::cloud::internal::EncodeBigEndian(
-                                       static_cast<std::int64_t>(100))));
+                                     far_future_us,
+                                     ::google::cloud::internal::EncodeBigEndian(
+                                         static_cast<std::int64_t>(100))));
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_2",
-                                   far_future_us_latest,
-                                   ::google::cloud::internal::EncodeBigEndian(
-                                       static_cast<std::int64_t>(201))));
-    DeletePersistentDB();
+                                     far_future_us_latest,
+                                     ::google::cloud::internal::EncodeBigEndian(
+                                         static_cast<std::int64_t>(201))));
+  DeletePersistentDB();
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2605,26 +2551,26 @@ TEST(PersistentReadModifyWrite, SetAndOlderTimestampCase) {
                 static_cast<std::int64_t>(101)));
 
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
-                                   far_past_us, "old"));
+                                     far_past_us, "old"));
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
-                                   far_past_us_oldest, "oldest"));
+                                     far_past_us_oldest, "oldest"));
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
-                                   col.cells(0).timestamp_micros(),
-                                   "old_with_suffix"));
+                                     col.cells(0).timestamp_micros(),
+                                     "old_with_suffix"));
 
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_2",
-                                   far_past_us,
-                                   ::google::cloud::internal::EncodeBigEndian(
-                                       static_cast<std::int64_t>(100))));
+                                     far_past_us,
+                                     ::google::cloud::internal::EncodeBigEndian(
+                                         static_cast<std::int64_t>(100))));
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_2",
-                                   far_past_us_oldest,
-                                   ::google::cloud::internal::EncodeBigEndian(
-                                       static_cast<std::int64_t>(200))));
+                                     far_past_us_oldest,
+                                     ::google::cloud::internal::EncodeBigEndian(
+                                         static_cast<std::int64_t>(200))));
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_2",
-                                   integer_col.cells(0).timestamp_micros(),
-                                   ::google::cloud::internal::EncodeBigEndian(
-                                       static_cast<std::int64_t>(101))));
-    DeletePersistentDB();
+                                     integer_col.cells(0).timestamp_micros(),
+                                     ::google::cloud::internal::EncodeBigEndian(
+                                         static_cast<std::int64_t>(101))));
+  DeletePersistentDB();
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2690,38 +2636,38 @@ TEST(InMemoryReadModifyWrite, RollbackNewerTimestamp) {
 }
 
 TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
-    auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "projects/test/instances/test/tables/test";
 
-    std::vector<std::string> column_families = {"column_family"};
-    auto maybe_table = CreateTable(table_name, column_families, true);
+  std::vector<std::string> column_families = {"column_family"};
+  auto maybe_table = CreateTable(table_name, column_families, true);
 
-    ASSERT_STATUS_OK(maybe_table);
-    auto& table = maybe_table.value();
+  ASSERT_STATUS_OK(maybe_table);
+  auto& table = maybe_table.value();
 
-    auto usecs_in_day = (static_cast<std::int64_t>(24) * 60 * 60 * 1000 * 1000);
+  auto usecs_in_day = (static_cast<std::int64_t>(24) * 60 * 60 * 1000 * 1000);
 
-    auto far_future_us = (std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::system_clock::now().time_since_epoch())
-                              .count() *
-                          1000) +
-                         usecs_in_day;
+  auto far_future_us = (std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count() *
+                        1000) +
+                       usecs_in_day;
 
-    ASSERT_GT(far_future_us,
-              std::chrono::duration_cast<std::chrono::microseconds>(
-                  std::chrono::system_clock::now().time_since_epoch())
-                  .count());
+  ASSERT_GT(far_future_us,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
 
-    std::vector<SetCellParams> p = {
-        {"column_family", "column_1", far_future_us, "prefix"},
-    };
+  std::vector<SetCellParams> p = {
+      {"column_family", "column_1", far_future_us, "prefix"},
+  };
 
-    auto status = SetCells(table, table_name, "0", p);
-    ASSERT_STATUS_OK(status);
+  auto status = SetCells(table, table_name, "0", p);
+  ASSERT_STATUS_OK(status);
 
-    // The rules are evaluated in order. In this case, the 2nd rule
-    // refers to a column family that does not exist and should trigger
-    // a rollback.
-    auto constexpr kRMWText = R"pb(
+  // The rules are evaluated in order. In this case, the 2nd rule
+  // refers to a column family that does not exist and should trigger
+  // a rollback.
+  auto constexpr kRMWText = R"pb(
     table_name: "projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
@@ -2737,15 +2683,15 @@ TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
       }]
   )pb";
 
-    google::bigtable::v2::ReadModifyWriteRowRequest request;
-    ASSERT_TRUE(TextFormat::ParseFromString(kRMWText, &request));
+  google::bigtable::v2::ReadModifyWriteRowRequest request;
+  ASSERT_TRUE(TextFormat::ParseFromString(kRMWText, &request));
 
-    auto maybe_response = table->ReadModifyWriteRow(request);
-    ASSERT_EQ(false, maybe_response.ok());
+  auto maybe_response = table->ReadModifyWriteRow(request);
+  ASSERT_EQ(false, maybe_response.ok());
 
-    ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
+  ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
                                      far_future_us, "prefix"));
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2810,37 +2756,37 @@ TEST(InMemoryReadModifyWrite, RollbackOlderTimestamp) {
 }
 
 TEST(PersistentReadModifyWrite, RollbackOlderTimestamp) {
-    auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "projects/test/instances/test/tables/test";
 
-    std::vector<std::string> column_families = {"column_family"};
-    auto maybe_table = CreateTable(table_name, column_families, true);
+  std::vector<std::string> column_families = {"column_family"};
+  auto maybe_table = CreateTable(table_name, column_families, true);
 
-    ASSERT_STATUS_OK(maybe_table);
-    auto& table = maybe_table.value();
+  ASSERT_STATUS_OK(maybe_table);
+  auto& table = maybe_table.value();
 
-    auto usecs_in_day = (static_cast<std::int64_t>(24) * 60 * 60 * 1000 * 1000);
+  auto usecs_in_day = (static_cast<std::int64_t>(24) * 60 * 60 * 1000 * 1000);
 
-    auto far_past_us = (std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count() *
-                        1000) -
-                       usecs_in_day;
-    ASSERT_LT(far_past_us,
-              std::chrono::duration_cast<std::chrono::microseconds>(
-                  std::chrono::system_clock::now().time_since_epoch())
-                  .count());
+  auto far_past_us = (std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count() *
+                      1000) -
+                     usecs_in_day;
+  ASSERT_LT(far_past_us,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
 
-    std::vector<SetCellParams> p = {
-        {"column_family", "column_1", far_past_us, "old"},
-    };
+  std::vector<SetCellParams> p = {
+      {"column_family", "column_1", far_past_us, "old"},
+  };
 
-    auto status = SetCells(table, table_name, "0", p);
-    ASSERT_STATUS_OK(status);
+  auto status = SetCells(table, table_name, "0", p);
+  ASSERT_STATUS_OK(status);
 
-    // The rules are evaluated in order. In this case, the 2nd rule
-    // refers to a column family that does not exist and should trigger
-    // a rollback.
-    auto constexpr kRMWText = R"pb(
+  // The rules are evaluated in order. In this case, the 2nd rule
+  // refers to a column family that does not exist and should trigger
+  // a rollback.
+  auto constexpr kRMWText = R"pb(
     table_name: "projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
@@ -2856,15 +2802,15 @@ TEST(PersistentReadModifyWrite, RollbackOlderTimestamp) {
       }]
   )pb";
 
-    google::bigtable::v2::ReadModifyWriteRowRequest request;
-    ASSERT_TRUE(TextFormat::ParseFromString(kRMWText, &request));
+  google::bigtable::v2::ReadModifyWriteRowRequest request;
+  ASSERT_TRUE(TextFormat::ParseFromString(kRMWText, &request));
 
-    auto maybe_response = table->ReadModifyWriteRow(request);
-    ASSERT_EQ(false, maybe_response.ok());
+  auto maybe_response = table->ReadModifyWriteRow(request);
+  ASSERT_EQ(false, maybe_response.ok());
 
-    ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
+  ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
                                      far_past_us, "old"));
-    DeletePersistentDB();
+  DeletePersistentDB();
 }
 
 }  // namespace emulator

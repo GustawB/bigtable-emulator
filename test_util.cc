@@ -120,8 +120,7 @@ Status HasPersistentCell(
   auto const& cf = std::static_pointer_cast<PersistentColumnFamily>(
       column_family_it->second);
 
-  auto encoded_key =
-      KeyCoder::PartialEncode(row_key, column_qualifier);
+  auto encoded_key = KeyCoder::PartialEncode(row_key, column_qualifier);
   auto iter = utilities->GetIterator(cf);
   iter->Seek(encoded_key);
   if (!iter->Valid()) {
@@ -146,25 +145,84 @@ Status HasPersistentCell(
                              .WithMetadata("column family", column_family));
   }
 
-    while (iter->Valid() && decoded_key->row == row_key && decoded_key->col == column_qualifier) {
-        decoded_key = KeyCoder::Decode(iter->key().ToString());
-        if (decoded_key->timestamp == timestamp_micros) break;
-        iter->Next();
-    }
+  while (iter->Valid() && decoded_key->row == row_key &&
+         decoded_key->col == column_qualifier) {
+    decoded_key = KeyCoder::Decode(iter->key().ToString());
+    if (decoded_key->timestamp == timestamp_micros) break;
+    iter->Next();
+  }
   if (decoded_key->timestamp != timestamp_micros) {
     return NotFoundError(
         "timestamp not found",
-        GCP_ERROR_INFO()
-            .WithMetadata("expected timestamp",
-                          absl::StrFormat("%d", timestamp_micros)));
+        GCP_ERROR_INFO().WithMetadata("expected timestamp",
+                                      absl::StrFormat("%d", timestamp_micros)));
   }
   if (iter->value().ToString() != value) {
-    return NotFoundError(
-        "wrong value",
-        GCP_ERROR_INFO()
-            .WithMetadata("expected", value)
-            .WithMetadata("found", iter->value().ToString()));
+    return NotFoundError("wrong value",
+                         GCP_ERROR_INFO()
+                             .WithMetadata("expected", value)
+                             .WithMetadata("found", iter->value().ToString()));
   }
+  return Status();
+}
+
+Status HasInMemoryRow(
+    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
+    std::string const& column_family, std::string const& row_key) {
+  auto utilities =
+      std::static_pointer_cast<InMemoryTableOperations>(table->GetUtilities());
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
+    return NotFoundError(
+        "column family not found in table",
+        GCP_ERROR_INFO().WithMetadata("column family", column_family));
+  }
+
+  auto const& cf =
+      std::static_pointer_cast<InMemoryColumnFamily>(column_family_it->second);
+  auto column_family_row_it = cf->find(row_key);
+  if (column_family_row_it == cf->end()) {
+    return NotFoundError("row key not found in column family",
+                         GCP_ERROR_INFO()
+                             .WithMetadata("row key", row_key)
+                             .WithMetadata("column family", column_family));
+  }
+
+  return Status();
+}
+
+Status HasPersistentRow(
+    std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
+    std::string const& column_family, std::string const& row_key) {
+  auto utilities = std::static_pointer_cast<PersistentTableOperations>(
+      table->GetUtilities());
+  auto column_family_it = utilities->find(column_family);
+  if (column_family_it == utilities->end()) {
+    return NotFoundError(
+        "column family not found in table",
+        GCP_ERROR_INFO().WithMetadata("column family", column_family));
+  }
+
+  auto const& cf = std::static_pointer_cast<PersistentColumnFamily>(
+      column_family_it->second);
+  auto iter = utilities->GetIterator(cf);
+  iter->Seek(row_key);
+  if (!iter->Valid()) {
+    return NotFoundError("row key not found in column family",
+                         GCP_ERROR_INFO()
+                             .WithMetadata("row key", row_key)
+                             .WithMetadata("column family", column_family));
+  }
+
+  auto key = iter->key();
+  auto decoded_key = KeyCoder::Decode(key.ToString());
+  if (decoded_key->row != row_key) {
+    return NotFoundError("no row found in column family",
+                         GCP_ERROR_INFO()
+                             .WithMetadata("row key", row_key)
+                             .WithMetadata("column family", column_family));
+  }
+
   return Status();
 }
 
