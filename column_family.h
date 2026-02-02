@@ -672,6 +672,11 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   mutable std::string curr_value_string_;
   mutable DecodeResult curr_decoded_key_;
   mutable absl::optional<CellView> cur_value_;
+
+  mutable std::string lowerbound_key_;
+  mutable std::string upperbound_key_;
+  mutable rocksdb::Slice lowerbound_slice_;
+  mutable rocksdb::Slice upperbound_slice_;
 };
 
 }  // namespace emulator

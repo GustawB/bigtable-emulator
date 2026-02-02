@@ -612,9 +612,37 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
     initialized_ = true;
 
     rocksdb::ReadOptions opts;
-    it_ = std::unique_ptr<rocksdb::Iterator>(
-        db_->NewIterator(opts, handle_.get()));
-    it_->SeekToFirst();
+
+    if (row_ranges_ && !row_ranges_->disjoint_ranges().empty()) {
+      // Limit the scan to the smallest range
+      // that covers all specified row ranges
+      auto const& ranges = row_ranges_->disjoint_ranges();
+      auto const start_val = (*ranges.begin()).start();
+      auto const end_val = (*ranges.rbegin()).end();
+
+      // Set lower bound
+      lowerbound_key_ =
+          KeyCoder::PartialEncode(absl::get<std::string>(start_val), "");
+      lowerbound_slice_ = rocksdb::Slice(lowerbound_key_);
+      opts.iterate_lower_bound = &lowerbound_slice_;
+
+      // Set upper bound if not infinity
+      if (!absl::holds_alternative<StringRangeSet::Range::Infinity>(end_val)) {
+        upperbound_key_ = KeyCoder::PartialEncode(
+            NextLexicographicalString(absl::get<std::string>(end_val)), "");
+        upperbound_slice_ = rocksdb::Slice(upperbound_key_);
+        opts.iterate_upper_bound = &upperbound_slice_;
+      }
+
+      it_ = std::unique_ptr<rocksdb::Iterator>(
+          db_->NewIterator(opts, handle_.get()));
+      it_->Seek(lowerbound_key_);
+    } else {
+      it_ = std::unique_ptr<rocksdb::Iterator>(
+          db_->NewIterator(opts, handle_.get()));
+      it_->SeekToFirst();
+    }
+
     if (it_->Valid()) {
       PointToNextMatchingCell();
     } else {
