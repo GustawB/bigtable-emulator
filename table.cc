@@ -712,7 +712,7 @@ std::unique_ptr<RowTransaction> PersistentTableOperations::NewRowTransaction(
 
 StatusOr<CellStream> PersistentTableOperations::CreateCellStream(
     std::shared_ptr<StringRangeSet> range_set,
-    absl::optional<google::bigtable::v2::RowFilter>) const {
+    absl::optional<google::bigtable::v2::RowFilter> maybe_row_filter) const {
   auto table_stream_ctor = [range_set = std::move(range_set), this] {
     std::vector<std::unique_ptr<AbstractCellStreamImpl>> per_cf_streams;
     per_cf_streams.reserve(column_families_.size());
@@ -725,6 +725,9 @@ StatusOr<CellStream> PersistentTableOperations::CreateCellStream(
         std::move(per_cf_streams)));
   };
 
+  if (maybe_row_filter.has_value()) {
+    return CreateFilter(maybe_row_filter.value(), table_stream_ctor);
+  }
   return table_stream_ctor();
 }
 
@@ -1359,7 +1362,37 @@ std::vector<CellStream> FilteredInMemoryTableStream::CreateCellStreams(
 
 bool FilteredPersistentTableStream::ApplyFilter(
     InternalFilter const& internal_filter) {
-  // TODO: Implement
+  if (!absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
+      !absl::holds_alternative<ColumnRange>(internal_filter)) {
+    return MergeCellStreams::ApplyFilter(internal_filter);
+  }
+  // internal_filter is either FamilyNameRegex or ColumnRange
+  for (auto stream_it = unfinished_streams_.begin();
+       stream_it != unfinished_streams_.end();) {
+    auto* cf_stream = static_cast<FilteredPersistentColumnFamilyStream*>(
+        &(*stream_it)->impl());
+    assert(cf_stream);
+
+    if ((absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
+         !re2::RE2::PartialMatch(
+             cf_stream->column_family_name(),
+             *absl::get<FamilyNameRegex>(internal_filter).regex)) ||
+        (absl::holds_alternative<ColumnRange>(internal_filter) &&
+         absl::get<ColumnRange>(internal_filter).column_family !=
+             cf_stream->column_family_name())) {
+      stream_it = unfinished_streams_.erase(stream_it);
+      continue;
+    }
+
+    if (absl::holds_alternative<ColumnRange>(internal_filter) &&
+        absl::get<ColumnRange>(internal_filter).column_family ==
+            cf_stream->column_family_name()) {
+      cf_stream->ApplyFilter(internal_filter);
+    }
+
+    stream_it++;
+  }
+
   return true;
 }
 
