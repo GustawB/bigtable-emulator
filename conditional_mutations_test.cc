@@ -141,7 +141,8 @@ TEST(InMemoryConditionalMutations, RejectInvalidRequest) {
 }
 
 TEST(PersistentConditionalMutations, TestTrueMutations) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name =
+      "conditional_projects/test/instances/test/tables/test";
   auto const* const column_family_name = "test_column_family";
   auto const* const row_key = "0";
   auto const* const column_qualifier = "column_1";
@@ -205,11 +206,12 @@ TEST(PersistentConditionalMutations, TestTrueMutations) {
                                      false_mutation_value)
                        .ok());
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/conditional_projects");
 }
 
 TEST(PersistentConditionalMutations, RejectInvalidRequest) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name =
+      "conditional_projects/test/instances/test/tables/test";
   auto const* const column_family_name = "test_column_family";
   auto const* const row_key = "0";
   auto const* const column_qualifier = "column_1";
@@ -261,7 +263,7 @@ TEST(PersistentConditionalMutations, RejectInvalidRequest) {
   cond_mutation_no_row_key.set_table_name(table_name);
   ASSERT_EQ(false, table->CheckAndMutateRow(cond_mutation_no_mutations).ok());
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/conditional_projects");
 }
 
 }  // namespace emulator

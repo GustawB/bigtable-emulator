@@ -10,8 +10,6 @@
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/bigtable/v2/bigtable.grpc.pb.h>
 #include <google/bigtable/v2/bigtable.pb.h>
-#include <google/longrunning/operations.pb.h>
-#include <google/protobuf/empty.pb.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/security/credentials.h>
 #include <grpcpp/support/status.h>
@@ -38,7 +36,7 @@ Status CompareSchemas(::google::bigtable::admin::v2::Table const& A,
                              .WithMetadata("Schema B", B.name()));
   }
 
-  for (auto cf : A.column_families()) {
+  for (const auto& cf : A.column_families()) {
     if (B.column_families().find(cf.first) == B.column_families().end()) {
       return NotFoundError("have different column families",
                            GCP_ERROR_INFO()
@@ -87,12 +85,12 @@ class ServerTest : public ::testing::Test {
 
 TEST_F(ServerTest, RecoverEmptyTable) {
   auto const* const table_name_short = "recovery";
-  auto const* const table_name_long = "projects/tables/recovery";
+  auto const* const table_name_long = "recovery_projects/tables/recovery";
   grpc::Status status;
   {
     google::bigtable::admin::v2::CreateTableRequest request;
     request.set_table_id(table_name_short);
-    request.set_parent("projects");
+    request.set_parent("recovery_projects");
     google::bigtable::admin::v2::Table response;
     grpc::ClientContext context;
     ASSERT_EQ(
@@ -120,16 +118,16 @@ TEST_F(ServerTest, RecoverEmptyTable) {
     ASSERT_EQ(Status(), CompareSchemas(empty_schema, response));
   }
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/recovery_projects");
 }
 
 TEST_F(ServerTest, RecoverTableWithColumnFamilies) {
   auto const* const table_name_short = "recovery";
-  auto const* const table_name_long = "projects/tables/recovery";
+  auto const* const table_name_long = "recovery_projects/tables/recovery";
   {
     google::bigtable::admin::v2::CreateTableRequest request;
     request.set_table_id(table_name_short);
-    request.set_parent("projects");
+    request.set_parent("recovery_projects");
     google::bigtable::admin::v2::Table response;
     grpc::ClientContext context;
     ASSERT_EQ(
@@ -246,7 +244,7 @@ TEST_F(ServerTest, RecoverTableWithColumnFamilies) {
     ASSERT_TRUE(found_b);
   }
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/recovery_projects");
 }
 
 }  // namespace
