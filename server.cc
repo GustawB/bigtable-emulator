@@ -181,7 +181,6 @@ class EmulatorTableService final : public btadmin::BigtableTableAdmin::Service {
                            btadmin::CreateTableRequest const* request,
                            btadmin::Table* response) override {
     auto table_name = request->parent() + "/tables/" + request->table_id();
-    std::cout << table_name << "\n";
     auto maybe_table = cluster_->CreateTable(table_name, request->table());
     if (!maybe_table) {
       return ToGrpcStatus(maybe_table.status());
@@ -348,7 +347,6 @@ class DefaultEmulatorServer : public EmulatorServer {
     builder_.RegisterService(&bt_service_);
     builder_.RegisterService(&table_service_);
     server_ = builder_.BuildAndStart();
-    std::cout << "E\n";
   }
   int bound_port() override { return bound_port_; }
   void Shutdown() override { server_->Shutdown(); }
@@ -367,12 +365,9 @@ class DefaultEmulatorServer : public EmulatorServer {
 
 StatusOr<std::unique_ptr<EmulatorServer>> CreateDefaultEmulatorServer(
     std::string const& host, std::uint16_t port, bool persist) {
-  std::cout << "F\n";
   auto* default_emulator_server =
       new DefaultEmulatorServer(host, port, persist);
-  std::cout << "G\n";
   if (!default_emulator_server->HasValidServer()) {
-    std::cout << "C\n";
     return UnknownError("An unknown error occurred when starting server",
                         GCP_ERROR_INFO()
                             .WithMetadata("host", host)

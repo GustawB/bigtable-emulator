@@ -768,7 +768,6 @@ Status PersistentTableOperations::DropRowRange(
 
   // 2. Delete specified (and locked) range in each column family.
   for (auto& cf : column_families_) {
-    std::cout << cf.second->GetRaw()->GetName() << std::endl;
     auto cf_it = std::unique_ptr<rocksdb::Iterator>(
         txn->GetIterator(rocksdb::ReadOptions(), cf.second->GetRaw()));
     cf_it->Seek(row_key_prefix);
@@ -1204,10 +1203,9 @@ StatusOr<std::shared_ptr<Table>> Table::Load(std::string const& table_name,
                                              std::string const& data_root) {
   google::bigtable::admin::v2::Table placeholder;
   placeholder.set_name(table_name);
-
   std::shared_ptr<Table> res(new Table);
-  auto st = res->Construct(std::move(placeholder), /*should_persist=*/true,
-                           data_root, OpenMode::kOpenExisting);
+  auto st = res->Construct(std::move(placeholder), true, data_root,
+                           OpenMode::kOpenExisting);
   if (!st.ok()) return st;
   return res;
 }

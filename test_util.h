@@ -46,6 +46,11 @@ StatusOr<std::shared_ptr<Table>> CreateTable(
 
 void DeletePersistentDB();
 
+::google::bigtable::admin::v2::Table CreateSchema(
+    std::string const& table_name,
+    std::map<std::string, ::google::bigtable::admin::v2::ColumnFamily> const&
+        column_families);
+
 Status HasPersistentCell(
     std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
     std::string const& column_family, std::string const& row_key,

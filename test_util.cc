@@ -50,6 +50,20 @@ void DeletePersistentDB() {
   std::filesystem::remove_all(target);
 }
 
+::google::bigtable::admin::v2::Table CreateSchema(
+    std::string const& table_name,
+    std::map<std::string, ::google::bigtable::admin::v2::ColumnFamily> const&
+        column_families) {
+  ::google::bigtable::admin::v2::Table schema;
+
+  schema.set_name(table_name);
+  for (auto const& cf : column_families) {
+    (*schema.mutable_column_families())[cf.first] = cf.second;
+  }
+
+  return schema;
+}
+
 Status HasInMemoryCell(
     std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
     std::string const& column_family, std::string const& row_key,
@@ -148,10 +162,11 @@ Status HasPersistentCell(
   while (iter->Valid() && decoded_key->row == row_key &&
          decoded_key->col == column_qualifier) {
     decoded_key = KeyCoder::Decode(iter->key().ToString());
-    if (decoded_key->timestamp == timestamp_micros) break;
+    if (decoded_key->timestamp == static_cast<uint64_t>(timestamp_micros))
+      break;
     iter->Next();
   }
-  if (decoded_key->timestamp != timestamp_micros) {
+  if (decoded_key->timestamp != static_cast<uint64_t>(timestamp_micros)) {
     return NotFoundError(
         "timestamp not found",
         GCP_ERROR_INFO().WithMetadata("expected timestamp",

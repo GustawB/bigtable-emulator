@@ -78,20 +78,6 @@ using std::string;
   return column_family;
 }
 
-::google::bigtable::admin::v2::Table CreateSchema(
-    std::string const& table_name,
-    std::map<std::string, ::google::bigtable::admin::v2::ColumnFamily> const&
-        column_families) {
-  ::google::bigtable::admin::v2::Table schema;
-
-  schema.set_name(table_name);
-  for (auto const& cf : column_families) {
-    (*schema.mutable_column_families())[cf.first] = cf.second;
-  }
-
-  return schema;
-}
-
 Status DeleteFromFamilies(
     std::shared_ptr<google::cloud::bigtable::emulator::Table>& table,
     std::string const& table_name, std::string const& row_key,
