@@ -653,8 +653,21 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   class FilterApply;
 
   void InitializeIfNeeded() const;
-  bool PointToNextMatchingCell() const;
-  bool CellMatchesFilters() const;
+  bool AdvanceToNextFilteredCell() const;
+
+  bool PositionAtFilteredRow() const;
+  bool PositionAtFilteredColumn() const;
+  bool PositionAtFilteredCell() const;
+
+  void AdvanceRow() const;
+  void AdvanceColumn() const;
+  void AdvanceCell() const;
+
+  bool IsValidRow() const;
+  bool IsValidColumn() const;
+  bool IsValidCell() const;
+
+  bool UpdateDecodedKey() const;
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;

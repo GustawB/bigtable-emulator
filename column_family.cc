@@ -587,22 +587,17 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   cur_value_.reset();
 
   if (mode == NextMode::kCell) {
-    it_->Next();
+    AdvanceCell();
   } else if (mode == NextMode::kColumn) {
-    std::string next_col = NextLexicographicalString(curr_decoded_key_.col);
-    std::string seek_key =
-        KeyCoder::PartialEncode(curr_decoded_key_.row, next_col);
-    it_->Seek(seek_key);
+    AdvanceColumn();
   } else if (mode == NextMode::kRow) {
-    std::string next_row = NextLexicographicalString(curr_decoded_key_.row);
-    std::string seek_key = KeyCoder::PartialEncode(next_row, "");
-    it_->Seek(seek_key);
+    AdvanceRow();
   } else {
     return false;
   }
 
-  if (it_->Valid()) {
-    PointToNextMatchingCell();
+  if (AdvanceToNextFilteredCell()) {
+    curr_value_string_ = it_->value().ToString();
   }
   return true;
 }
@@ -643,34 +638,99 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
       it_->SeekToFirst();
     }
 
-    if (it_->Valid()) {
-      PointToNextMatchingCell();
-    } else {
-      // TODO: remove debug print
-      std::cout << it_->status().ToString() << std::endl;
+    UpdateDecodedKey();
+    if (AdvanceToNextFilteredCell()) {
+      curr_value_string_ = it_->value().ToString();
     }
   }
 }
 
-bool FilteredPersistentColumnFamilyStream::PointToNextMatchingCell() const {
-  while (it_->Valid()) {
-    auto maybe_decoded = KeyCoder::Decode(
-        std::string_view(it_->key().data(), it_->key().size()));
-    if (!maybe_decoded.ok()) {
-      return false;
+bool FilteredPersistentColumnFamilyStream::AdvanceToNextFilteredCell() const {
+  while (PositionAtFilteredRow()) {
+    while (PositionAtFilteredColumn()) {
+      if (PositionAtFilteredCell()) {
+        return true;
+      }
     }
-    curr_decoded_key_ = maybe_decoded.value();
-    curr_value_string_ = it_->value().ToString();
-    if (CellMatchesFilters()) {
-      return true;
-    }
-    it_->Next();
   }
-  cur_value_.reset();
   return false;
 }
 
-bool FilteredPersistentColumnFamilyStream::CellMatchesFilters() const {
+bool FilteredPersistentColumnFamilyStream::PositionAtFilteredRow() const {
+  while (it_->Valid()) {
+    if (IsValidRow()) {
+      return true;
+    }
+    AdvanceRow();
+  }
+  return false;
+}
+
+bool FilteredPersistentColumnFamilyStream::PositionAtFilteredColumn() const {
+  std::string current_row = curr_decoded_key_.row;
+  while (it_->Valid() && curr_decoded_key_.row == current_row) {
+    if (IsValidColumn()) {
+      return true;
+    }
+    AdvanceColumn();
+  }
+  return false;
+}
+
+bool FilteredPersistentColumnFamilyStream::PositionAtFilteredCell() const {
+  std::string current_row = curr_decoded_key_.row;
+  std::string current_col = curr_decoded_key_.col;
+  while (it_->Valid() && curr_decoded_key_.row == current_row &&
+         curr_decoded_key_.col == current_col) {
+    if (IsValidCell()) {
+      return true;
+    }
+    AdvanceCell();
+  }
+  return false;
+}
+
+void FilteredPersistentColumnFamilyStream::AdvanceRow() const {
+  std::string next_row = NextLexicographicalString(curr_decoded_key_.row);
+  std::string seek_key = KeyCoder::PartialEncode(next_row, "");
+  it_->Seek(seek_key);
+  UpdateDecodedKey();
+}
+
+void FilteredPersistentColumnFamilyStream::AdvanceColumn() const {
+  // Columns are usually close to each other, so Next is more efficient
+  for (it_->Next(); it_->Valid(); it_->Next()) {
+    auto maybe_decoded = KeyCoder::Decode(
+        std::string_view(it_->key().data(), it_->key().size()));
+    // If this was the last column in the row,
+    // move to the first column of the next row
+    if (maybe_decoded.ok() &&
+        (maybe_decoded.value().row != curr_decoded_key_.row ||
+         maybe_decoded.value().col != curr_decoded_key_.col)) {
+      curr_decoded_key_ = maybe_decoded.value();
+      return;
+    }
+  }
+}
+
+inline void FilteredPersistentColumnFamilyStream::AdvanceCell() const {
+  it_->Next();
+  UpdateDecodedKey();
+}
+
+bool FilteredPersistentColumnFamilyStream::UpdateDecodedKey() const {
+  if (it_->Valid()) {
+    auto maybe_decoded = KeyCoder::Decode(
+        std::string_view(it_->key().data(), it_->key().size()));
+    if (maybe_decoded.ok()) {
+      curr_decoded_key_ = maybe_decoded.value();
+      return true;
+    }
+  }
+  return false;
+}
+
+bool FilteredPersistentColumnFamilyStream::IsValidRow() const {
   if (row_ranges_ && !row_ranges_->Contains(curr_decoded_key_.row)) {
     return false;
   }
@@ -679,6 +739,10 @@ bool FilteredPersistentColumnFamilyStream::CellMatchesFilters() const {
       return false;
     }
   }
+  return true;
+}
+
+bool FilteredPersistentColumnFamilyStream::IsValidColumn() const {
   if (!column_ranges_.Contains(curr_decoded_key_.col)) {
     return false;
   }
@@ -687,6 +751,10 @@ bool FilteredPersistentColumnFamilyStream::CellMatchesFilters() const {
       return false;
     }
   }
+  return true;
+}
+
+bool FilteredPersistentColumnFamilyStream::IsValidCell() const {
   if (!timestamp_ranges_.Contains(
           std::chrono::milliseconds(curr_decoded_key_.timestamp))) {
     return false;
