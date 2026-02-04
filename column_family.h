@@ -659,11 +659,12 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   bool PositionAtFilteredColumn() const;
   bool PositionAtFilteredCell() const;
 
+  bool AdvanceToNextRowRange() const;
   void AdvanceRow() const;
   void AdvanceColumn() const;
   void AdvanceCell() const;
 
-  bool IsValidRow() const;
+  bool RowMatchesRegexes() const;
   bool IsValidColumn() const;
   bool IsValidCell() const;
 
@@ -690,6 +691,10 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   mutable std::string upperbound_key_;
   mutable rocksdb::Slice lowerbound_slice_;
   mutable rocksdb::Slice upperbound_slice_;
+
+  mutable std::set<StringRangeSet::Range,
+                   StringRangeSet::Range::StartLess>::const_iterator
+      row_range_it_;
 };
 
 }  // namespace emulator

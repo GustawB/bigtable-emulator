@@ -605,6 +605,7 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
 void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
   if (!initialized_) {
     initialized_ = true;
+    row_range_it_ = row_ranges_->disjoint_ranges().begin();
 
     rocksdb::ReadOptions opts;
 
@@ -660,7 +661,11 @@ bool FilteredPersistentColumnFamilyStream::AdvanceToNextFilteredCell() const {
 
 bool FilteredPersistentColumnFamilyStream::PositionAtFilteredRow() const {
   while (it_->Valid()) {
-    if (IsValidRow()) {
+    if (row_range_it_->IsAboveEnd(curr_decoded_key_.row) &&
+        !AdvanceToNextRowRange()) {
+      return false;
+    }
+    if (RowMatchesRegexes()) {
       return true;
     }
     AdvanceRow();
@@ -690,6 +695,34 @@ bool FilteredPersistentColumnFamilyStream::PositionAtFilteredCell() const {
     AdvanceCell();
   }
   return false;
+}
+
+bool FilteredPersistentColumnFamilyStream::AdvanceToNextRowRange() const {
+  while (row_range_it_->IsAboveEnd(curr_decoded_key_.row)) {
+    while (row_range_it_ != row_ranges_->disjoint_ranges().end() &&
+           row_range_it_->IsAboveEnd(curr_decoded_key_.row)) {
+      ++row_range_it_;
+    }
+    // No more row ranges, end of stream
+    if (row_range_it_ == row_ranges_->disjoint_ranges().end()) {
+      it_->SeekToLast();
+      it_->Next();
+      return false;
+    }
+    if (row_range_it_->IsBelowStart(curr_decoded_key_.row)) {
+      std::string start_key = row_range_it_->start_finite();
+      if (row_range_it_->start_open()) {
+        start_key = NextLexicographicalString(start_key);
+      }
+      std::string seek_key = KeyCoder::PartialEncode(start_key, "");
+      it_->Seek(seek_key);
+      UpdateDecodedKey();
+      if (!it_->Valid()) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 void FilteredPersistentColumnFamilyStream::AdvanceRow() const {
@@ -732,10 +765,7 @@ bool FilteredPersistentColumnFamilyStream::UpdateDecodedKey() const {
   return false;
 }
 
-bool FilteredPersistentColumnFamilyStream::IsValidRow() const {
-  if (!row_ranges_->Contains(curr_decoded_key_.row)) {
-    return false;
-  }
+inline bool FilteredPersistentColumnFamilyStream::RowMatchesRegexes() const {
   for (auto const& regex : row_regexes_) {
     if (!re2::RE2::PartialMatch(curr_decoded_key_.row, *regex)) {
       return false;
