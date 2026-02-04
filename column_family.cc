@@ -698,9 +698,6 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
     if (ts_filter_pos_->IsBelowStart(TimestampValue(decoded.timestamp))) {
       ++ts_filter_pos_;
 
-      //if (ts_filter_pos_ == t_ranges.rend()) {
-        //it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + "\xFF");
-      //} else {
       if (ts_filter_pos_ != t_ranges.rend()) {
         it_->Seek(KeyCoder::Encode(decoded.row, decoded.col,
                                    ts_filter_pos_->end().count()));
@@ -708,7 +705,6 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
         auto new_decoded = KeyCoder::Decode(it_->key().ToString()).value();
         it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
       }
-      //}
       continue;
     }
 

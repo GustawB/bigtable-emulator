@@ -35,7 +35,6 @@ class FilteredStreamTest : public ::testing::Test {
   std::string const col_key_ = "col";
 
   void SetUp() override {
-    // Generate a unique path per test so they don't clash (parallel safe)
     auto unit_test = ::testing::UnitTest::GetInstance();
     table_path_ = std::string("/tmp/filter_projects/") +
                   unit_test->current_test_info()->test_case_name() + "_" +
@@ -53,23 +52,21 @@ class FilteredStreamTest : public ::testing::Test {
     auto status = rocksdb::TransactionDB::Open(options, txn_options,
                                                table_path_, &raw_db);
     ASSERT_TRUE(status.ok()) << status.ToString();
-    db_.reset(raw_db);  // Handover to smart ptr
+    db_.reset(raw_db);
 
     rocksdb::ColumnFamilyHandle* raw_cf = nullptr;
     status = db_->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), cf_name_,
                                      &raw_cf);
     ASSERT_TRUE(status.ok()) << status.ToString();
-    cf_.reset(raw_cf);  // Handover to smart ptr
+    cf_.reset(raw_cf);
   }
 
   void TearDown() override {
-    // Order matters: CF dies before DB
     cf_.reset();
     db_.reset();
     std::filesystem::remove_all("/tmp/filter_projects");
   }
 
-  // Helper to riz up the data
   void Populate(std::map<std::string, std::string> const& data) {
     for (auto const& [q, v] : data) {
       auto status = db_->Put(rocksdb::WriteOptions(), cf_.get(),
@@ -88,7 +85,6 @@ class FilteredStreamTest : public ::testing::Test {
     }
   }
 
-  // Helper to run the stream and get results
   std::map<std::string, std::string> RunStream(
       std::shared_ptr<StringRangeSet> const& filter) {
     std::map<std::string, std::string> result_data;

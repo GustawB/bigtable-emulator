@@ -1366,7 +1366,7 @@ bool FilteredPersistentTableStream::ApplyFilter(
   for (auto stream_it = unfinished_streams_.begin();
        stream_it != unfinished_streams_.end();) {
     auto* cf_stream =
-        static_cast<FilteredInMemoryColumnFamilyStream*>(&(*stream_it)->impl());
+        static_cast<FilteredPersistentColumnFamilyStream*>(&(*stream_it)->impl());
     assert(cf_stream);
 
     if ((absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
