@@ -253,6 +253,25 @@ class PersistentTableOperations
   StatusOr<std::shared_ptr<PersistentColumnFamily>> FindColumnFamily(
       MESSAGE const& message) const;
 
+  std::map<std::string, std::shared_ptr<PersistentColumnFamily>>::iterator
+  begin() {
+    return column_families_.begin();
+  }
+  std::map<std::string, std::shared_ptr<PersistentColumnFamily>>::iterator
+  end() {
+    return column_families_.end();
+  }
+  std::map<std::string, std::shared_ptr<PersistentColumnFamily>>::iterator find(
+      std::string const& column_family) {
+    return column_families_.find(column_family);
+  }
+
+  std::unique_ptr<rocksdb::Iterator> GetIterator(
+      std::shared_ptr<PersistentColumnFamily> const& cf) const {
+    return std::unique_ptr<rocksdb::Iterator>(
+        db_->NewIterator(rocksdb::ReadOptions(), cf->GetRaw()));
+  }
+
   friend PersistentRowTransaction;
 
  protected:
@@ -310,10 +329,10 @@ class Table : public std::enable_shared_from_this<Table> {
  public:
   static StatusOr<std::shared_ptr<Table>> Create(
       google::bigtable::admin::v2::Table schema, bool should_persist,
-      std::string const& data_root = "/root/");
+      std::string const& data_root = "/tmp/");
 
   static StatusOr<std::shared_ptr<Table>> Load(
-      std::string const& table_name, std::string const& data_root = "/root/");
+      std::string const& table_name, std::string const& data_root = "/tmp/");
 
   std::shared_ptr<Table> get() { return shared_from_this(); }
 

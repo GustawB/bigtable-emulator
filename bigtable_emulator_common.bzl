@@ -41,5 +41,5 @@ bigtable_emulator_common_srcs = [
     "test_util.cc",
     "to_grpc_status.cc",
     "redolog.cc",
-    "key_coder.cpp",
+    "key_coder.cc",
 ]

@@ -123,7 +123,7 @@ class Cluster {
   std::map<std::string, std::shared_ptr<Table>> table_by_name_;
 
   bool should_persist_;
-  std::string data_root_ = "/root/";
+  std::string data_root_ = "/tmp/";
   std::set<std::string> loaded_tables_paths_;
 };
 

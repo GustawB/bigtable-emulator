@@ -1907,7 +1907,7 @@ TEST_F(FilterWorkTest, ConditionBranchFilterNextDifferentThanCell) {
 // streaming cells from actual table data (hence end to end).
 TEST(FiltersEndToEnd, ColumnRange) {
   std::vector<std::string> column_families = {"family1", "family2", "family3"};
-  auto maybe_table = CreateTable("table", column_families);
+  auto maybe_table = CreateTable("table", column_families, false);
   ASSERT_STATUS_OK(maybe_table);
   auto& table = maybe_table.value();
 

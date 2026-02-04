@@ -462,7 +462,6 @@ StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
 
   options.create_if_missing = true;
   options.create_missing_column_families = false;
-
   std::vector<std::string> cf_names;
   bool db_exists = std::filesystem::exists(db_path / "CURRENT");
 
@@ -520,14 +519,14 @@ StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
         absl::nullopt;
     if (cfd.second.has_value_type()) opt_value_type = cfd.second.value_type();
 
-    auto hit = handles_by_name.find(cfd.first);
+    /*auto hit = handles_by_name.find(cfd.first);
     if (hit != handles_by_name.end()) {
       auto maybe_cf = PersistentColumnFamily::OpenExisting(
           res->db_, hit->second, opt_value_type);
       if (!maybe_cf) return maybe_cf.status();
       res->column_families_.emplace(cfd.first, maybe_cf.value());
       continue;
-    }
+    }*/
 
     if (opt_value_type.has_value()) {
       auto new_cf = PersistentColumnFamily::ConstructAggregateColumnFamily(
@@ -568,7 +567,6 @@ StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
       return pending.status();
     }
   }
-
   return StatusOr<std::shared_ptr<TableOperations>>(std::move(res));
 }
 
@@ -746,7 +744,7 @@ StatusOr<std::size_t> PersistentTableOperations::GetRowCountEstimate() {
 }
 
 Status PersistentTableOperations::RemoveAllDataFromColumnFamilies() {
-  return DropRowRange("\x00");
+  return DropRowRange("");
 }
 
 Status PersistentTableOperations::DropRowRange(
@@ -755,7 +753,7 @@ Status PersistentTableOperations::DropRowRange(
   auto txn = std::unique_ptr<rocksdb::Transaction>(
       db_->BeginTransaction(rocksdb::WriteOptions()));
   rocksdb::Endpoint start(row_key_prefix, false);
-  rocksdb::Endpoint end(row_key_prefix + "\xFF", false);
+  rocksdb::Endpoint end(range_end, false);
   rocksdb::Status status;
 
   // 1. Lock the specified range in every column family
@@ -768,21 +766,21 @@ Status PersistentTableOperations::DropRowRange(
     }
   }
 
-  // 2. Delete specified (amd locked) range in each column family.
+  // 2. Delete specified (and locked) range in each column family.
   for (auto& cf : column_families_) {
     auto cf_it = std::unique_ptr<rocksdb::Iterator>(
-        db_->NewIterator(rocksdb::ReadOptions(), cf.second->GetRaw()));
+        txn->GetIterator(rocksdb::ReadOptions(), cf.second->GetRaw()));
     cf_it->Seek(row_key_prefix);
-    while (cf_it->Valid() && cf_it->key().starts_with(range_end)) {
-      status = txn->Delete(cf_it->key());
+    while (cf_it->Valid() && cf_it->key().starts_with(row_key_prefix) &&
+           cf_it->key().ToString() < range_end) {
+      status = txn->Delete(cf.second->GetRaw(), cf_it->key());
       if (!status.ok()) {
         txn->Rollback();
-        if (!status.ok()) {
-          return InternalError(
-              "Failed to drop row range: " + status.ToString(),
-              GCP_ERROR_INFO().WithMetadata("row key prefix", row_key_prefix));
-        }
+        return InternalError(
+            "Failed to drop row range: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("row key prefix", row_key_prefix));
       }
+      cf_it->Next();
     }
   }
 
@@ -1143,9 +1141,7 @@ StatusOr<btadmin::Table> Table::ModifyColumnFamilies(
   std::cout << "Modify column families: " << request.DebugString() << std::endl;
   auto lock_scope = utilities_->LockScope(true);
 
-  std::cout << "X\n";
   auto maybe_new_schema = utilities_->ModifyColumnFamilies(request, schema_);
-  std::cout << "Y\n";
   if (!maybe_new_schema) {
     return maybe_new_schema.status();
   }
@@ -1207,10 +1203,9 @@ StatusOr<std::shared_ptr<Table>> Table::Load(std::string const& table_name,
                                              std::string const& data_root) {
   google::bigtable::admin::v2::Table placeholder;
   placeholder.set_name(table_name);
-
   std::shared_ptr<Table> res(new Table);
-  auto st = res->Construct(std::move(placeholder), /*should_persist=*/true,
-                           data_root, OpenMode::kOpenExisting);
+  auto st = res->Construct(std::move(placeholder), true, data_root,
+                           OpenMode::kOpenExisting);
   if (!st.ok()) return st;
   return res;
 }
@@ -1536,9 +1531,9 @@ Status Table::DropRowRange(
 
   if (request.has_delete_all_data_from_table()) {
     Status status = utilities_->RemoveAllDataFromColumnFamilies();
-    /*if (!status.ok()) {
+    if (!status.ok()) {
       return status;
-    }*/
+    }
     return Status();
   }
 
@@ -1817,19 +1812,20 @@ Status PersistentRowTransaction::SetCell(
 
   auto const& column_family = maybe_column_family.value();
 
-  auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::microseconds(set_cell.timestamp_micros()));
-
+  auto timestamp = set_cell.timestamp_micros();
   if (timestamp_override.has_value()) {
-    timestamp = timestamp_override.value();
+    timestamp = std::chrono::duration_cast<std::chrono::microseconds>(
+                    timestamp_override.value())
+                    .count();
   }
 
   std::cout << "Writing to column family: "
             << column_family->GetRaw()->GetName() << "; row key: " << row_key_
             << "; column: " << set_cell.column_qualifier()
-            << "; value: " << set_cell.value() << std::endl;
-  std::string prepared_key = KeyCoder::Encode(
-      row_key_, set_cell.column_qualifier(), timestamp.count());
+            << "; value: " << set_cell.value() << "; timestamp: " << timestamp
+            << std::endl;
+  std::string prepared_key =
+      KeyCoder::Encode(row_key_, set_cell.column_qualifier(), timestamp);
   rocksdb::Status status =
       txn_->Put(column_family->GetRaw(), prepared_key, set_cell.value());
 
@@ -1863,13 +1859,11 @@ Status PersistentRowTransaction::AddToCell(
 
   auto value = google::cloud::internal::EncodeBigEndian(int64_input);
 
-  std::chrono::milliseconds ts_ms;
+  auto timestamp = add_to_cell.timestamp().raw_timestamp_micros();
   if (timestamp_override.has_value()) {
-    ts_ms = timestamp_override.value();
-  } else {
-    ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::microseconds(
-            add_to_cell.timestamp().raw_timestamp_micros()));
+    timestamp = std::chrono::duration_cast<std::chrono::microseconds>(
+                    timestamp_override.value())
+                    .count();
   }
 
   rocksdb::ColumnFamilyHandle* raw_cf = cf->GetRaw();
@@ -1893,7 +1887,8 @@ Status PersistentRowTransaction::AddToCell(
         GCP_ERROR_INFO().WithMetadata("mutation", add_to_cell.DebugString()));
   }
 
-  rocksdb::Iterator* it = txn_->GetIterator(rocksdb::ReadOptions(), raw_cf);
+  std::unique_ptr<rocksdb::Iterator> it(
+      txn_->GetIterator(rocksdb::ReadOptions(), raw_cf));
   it->Seek(start_key);
   std::string new_value = value;
   if (it->Valid() && it->key().starts_with(start_key)) {
@@ -1908,7 +1903,7 @@ Status PersistentRowTransaction::AddToCell(
   }
 
   std::string new_key = KeyCoder::Encode(
-      row_key_, add_to_cell.column_qualifier().raw_value(), ts_ms.count());
+      row_key_, add_to_cell.column_qualifier().raw_value(), timestamp);
   status = txn_->Put(raw_cf, new_key, std::move(new_value));
   if (!status.ok()) {
     return InternalError(
@@ -1941,12 +1936,10 @@ Status PersistentRowTransaction::DeleteFromColumn(
   uint64_t start_count = std::numeric_limits<uint64_t>::max();
   uint64_t end_count = std::numeric_limits<uint64_t>::min();
   if (delete_from_column.has_time_range()) {
-    auto start = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::microseconds(
-            delete_from_column.time_range().start_timestamp_micros()));
-    auto end = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::microseconds(
-            delete_from_column.time_range().end_timestamp_micros()));
+    auto start = std::chrono::microseconds(
+        delete_from_column.time_range().start_timestamp_micros());
+    auto end = std::chrono::microseconds(
+        delete_from_column.time_range().end_timestamp_micros());
 
     // An end timestamp micros of 0 is to be interpreted as infinity,
     // so we allow that.
@@ -1961,7 +1954,11 @@ Status PersistentRowTransaction::DeleteFromColumn(
     }
 
     start_count = start.count();
-    end_count = end.count();
+    if (delete_from_column.time_range().end_timestamp_micros() == 0) {
+      end_count = std::numeric_limits<uint64_t>::max();
+    } else {
+      end_count = end.count();
+    }
   }
 
   // The idea here is to iterate over each row, and for each row
@@ -1972,8 +1969,8 @@ Status PersistentRowTransaction::DeleteFromColumn(
 
   // 1. Acquire locks
   auto const& column_family = maybe_column_family.value();
-  auto cf_it = std::unique_ptr<rocksdb::Iterator>(utilities_->db_->NewIterator(
-      rocksdb::ReadOptions(), column_family->GetRaw()));
+  auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+      txn_->GetIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
   cf_it->SeekToFirst();
   while (cf_it->Valid()) {
     auto maybe_decoded = KeyCoder::Decode(
@@ -1985,10 +1982,12 @@ Status PersistentRowTransaction::DeleteFromColumn(
     }
     auto const& decoded = maybe_decoded.value();
 
+    // Remember that we keep timestamps reversed; that's why start_key
+    // contains the end_count.
     auto start_key = KeyCoder::Encode(
-        decoded.row, delete_from_column.column_qualifier(), start_count);
-    auto end_key = KeyCoder::Encode(
         decoded.row, delete_from_column.column_qualifier(), end_count);
+    auto end_key = KeyCoder::Encode(
+        decoded.row, delete_from_column.column_qualifier(), start_count);
     rocksdb::Endpoint start(start_key, false);
     rocksdb::Endpoint end(end_key, false);
     rocksdb::Status status =
@@ -1997,12 +1996,12 @@ Status PersistentRowTransaction::DeleteFromColumn(
       return InternalError("Failed to delete from column: " + status.ToString(),
                            GCP_ERROR_INFO());
     }
+
     starts.push_back(start_key);
     ends.push_back(end_key);
 
     cf_it->Seek(decoded.row + "\xFF");
   }
-  cf_it->Refresh();
 
   // 2. Now that things to delete are locked, we can delete them
   for (size_t i = 0; i < starts.size(); ++i) {
@@ -2021,6 +2020,7 @@ Status PersistentRowTransaction::DeleteFromColumn(
       }
       cf_it->Next();
     }
+    cf_it->Refresh();
   }
   return Status();
 }
@@ -2081,16 +2081,16 @@ PersistentRowTransaction::ReadModifyWriteRow(
     }
 
     // 2. Acquire iterator to the first value in range (if exists)
-    auto cf_it =
-        std::unique_ptr<rocksdb::Iterator>(utilities_->db_->NewIterator(
-            rocksdb::ReadOptions(), column_family->GetRaw()));
+    auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+        txn_->GetIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
     cf_it->Seek(partial_key);
 
     // 3. Main logic
     uint64_t system_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch())
-            .count();
+            .count() *
+        1000;
     if (!cf_it->Valid()) {
       std::string value;
       if (rule.has_append_value()) {
@@ -2104,7 +2104,9 @@ PersistentRowTransaction::ReadModifyWriteRow(
                                  system_ms),
                 value);
 
-      auto result_timestamp = std::chrono::milliseconds(system_ms);
+      auto result_timestamp =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::microseconds(system_ms));
       tmp_families[rule.family_name()].SetCell(
           request.row_key(), rule.column_qualifier(), result_timestamp,
           std::move(value));
@@ -2121,6 +2123,12 @@ PersistentRowTransaction::ReadModifyWriteRow(
     auto const& decoded_key = maybe_decoded.value();
     if (decoded_key.row != request.row_key() ||
         decoded_key.col != rule.column_qualifier()) {
+      auto result_timestamp =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::microseconds(system_ms));
+      tmp_families[rule.family_name()].SetCell(
+          request.row_key(), rule.column_qualifier(), result_timestamp,
+          rule.append_value());
       txn_->Put(column_family->GetRaw(),
                 KeyCoder::Encode(request.row_key(), rule.column_qualifier(),
                                  system_ms),
@@ -2154,9 +2162,12 @@ PersistentRowTransaction::ReadModifyWriteRow(
           rule.increment_amount() + maybe_prev_value_int.value());
     }
 
-    auto result_timestamp = std::chrono::milliseconds(system_ms);
+    auto result_timestamp =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::microseconds(system_ms));
     if (decoded_key.timestamp > system_ms) {
-      result_timestamp = std::chrono::milliseconds(decoded_key.timestamp);
+      result_timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::microseconds(decoded_key.timestamp));
       status = txn_->Delete(column_family->GetRaw(), cf_it->key());
       if (!status.ok()) {
         return InternalError(
@@ -2185,7 +2196,12 @@ PersistentRowTransaction::ReadModifyWriteRow(
         std::move(value));
   }
 
-  // Reusing functionality from the InMemory impl.
+  rocksdb::Status commit_status = txn_->Commit();
+  if (!commit_status.ok()) {
+    return InternalError(
+        "Failed to read modify row: " + commit_status.ToString(),
+        GCP_ERROR_INFO());
+  }
   return FamiliesToReadModifyWriteResponse(row_key_, tmp_families);
 }
 
