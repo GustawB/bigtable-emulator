@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <set>
@@ -376,7 +377,7 @@ TEST(InMemoryTransactionRollback, ZeroOrNegativeTimestampHandling) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -465,7 +466,7 @@ TEST(PersistentTransactionRollback, ZeroOrNegativeTimestampHandling) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -549,7 +550,7 @@ TEST(PersistentTransactionRollback, ZeroOrNegativeTimestampHandling) {
   ASSERT_EQ(cell_it->second, v[0].data);
   ASSERT_GE(cell_it->first, system_time_ms_before);
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Does the SetCell mutation work to set a cell to a specific value?
@@ -557,7 +558,7 @@ TEST(InMemoryTransactionRollback, SetCellBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -587,7 +588,7 @@ TEST(PersistentTransactionRollback, SetCellBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -612,7 +613,7 @@ TEST(PersistentTransactionRollback, SetCellBasicFunction) {
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, timestamp_micros, data));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that an old value is correctly restored in a pre-populated
@@ -622,7 +623,7 @@ TEST(InMemoryTransactionRollback, TestRestoreValue) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -683,7 +684,7 @@ TEST(PersistentTransactionRollback, TestRestoreValue) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -739,7 +740,7 @@ TEST(PersistentTransactionRollback, TestRestoreValue) {
       table, valid_column_family_name, row_key, column_qualifier,
       good_mutation_timestamp_micros, good_mutation_data));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that a new cell introduced in a chain of SetCell mutations is
@@ -748,7 +749,7 @@ TEST(InMemoryTransactionRollback, DeleteValue) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -799,7 +800,7 @@ TEST(PersistentTransactionRollback, DeleteValue) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -845,7 +846,7 @@ TEST(PersistentTransactionRollback, DeleteValue) {
   ASSERT_NE(status.ok(), true);  // Also the SetCell with invalid shema
                                  // should not have set anything.
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that if a successful SetCell mutation in a chain of SetCell
@@ -858,7 +859,7 @@ TEST(InMemoryTransactionRollback, DeleteColumn) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -904,7 +905,7 @@ TEST(PersistentTransactionRollback, DeleteColumn) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -946,7 +947,7 @@ TEST(PersistentTransactionRollback, DeleteColumn) {
                                v[0].column_qualifier);
   ASSERT_NE(status.ok(), true);
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that a chain of SetCell mutations that initially introduces a
@@ -956,7 +957,7 @@ TEST(InMemoryTransactionRollback, DeleteRow) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -990,7 +991,7 @@ TEST(PersistentTransactionRollback, DeleteRow) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   // The table will be set up with a schema with
   // valid_column_family_name and mutations with this column family
@@ -1019,7 +1020,7 @@ TEST(PersistentTransactionRollback, DeleteRow) {
   status = HasPersistentRow(table, valid_column_family_name, row_key);
   ASSERT_NE(status.ok(), true);
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Does the DeleteFromfamily mutation work to delete a row from a
@@ -1029,7 +1030,7 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1079,7 +1080,7 @@ TEST(PersistentTransactionRollback, DeleteFromFamilyBasicFunction) {
     ::google::bigtable::admin::v2::Table schema;
     ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-    auto const* const table_name = "projects/test/instances/test/tables/test";
+    auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
     auto const* const row_key = "0";
     auto const* const column_family_name = "test";
     auto const* const column_qualifier = "test";
@@ -1123,7 +1124,7 @@ row_key));
     ASSERT_EQ(true,
               HasPersistentRow(table, second_column_family_name, row_key).ok());
 
-    DeletePersistentDB();
+    std::filesystem::remove_all("/tmp/mutation_projects");
 }*/
 
 // Test that DeleteFromfamily can be rolled back in case a subsequent
@@ -1132,7 +1133,7 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyRollback) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1185,11 +1186,11 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyRollback) {
   ASSERT_STATUS_OK(HasInMemoryRow(table, column_family_name, row_key));
 }
 
-/*TEST(PersistentTransactionRollback, DeleteFromFamilyRollback) {
+TEST(PersistentTransactionRollback, DeleteFromFamilyRollback) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1243,8 +1244,8 @@ row_key));
 column_qualifier)); ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name,
 row_key));
 
-    DeletePersistentDB();
-}*/
+  std::filesystem::remove_all("/tmp/mutation_projects");
+}
 
 ::google::bigtable::v2::TimestampRange* NewTimestampRange(int64_t start,
                                                           int64_t end) {
@@ -1260,7 +1261,7 @@ TEST(InMemoryTransactionRollback, DeleteFromColumnBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1302,7 +1303,7 @@ TEST(PersistentTransactionRollback, DeleteFromColumnBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1339,7 +1340,7 @@ TEST(PersistentTransactionRollback, DeleteFromColumnBasicFunction) {
       HasPersistentColumn(table, column_family_name, row_key, column_qualifier);
   ASSERT_NE(Status(), status);
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Does DeleteFromColumn rollback work?
@@ -1347,7 +1348,7 @@ TEST(InMemoryTransactionRollback, DeleteFromColumnRollback) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1405,7 +1406,7 @@ TEST(PersistentTransactionRollback, DeleteFromColumnRollback) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "test";
   auto const* const column_qualifier = "test";
@@ -1458,7 +1459,7 @@ TEST(PersistentTransactionRollback, DeleteFromColumnRollback) {
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, 3000, data));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Can we delete a row from all column families?
@@ -1466,7 +1467,7 @@ TEST(InMemoryTransactionRollback, DeleteFromRowBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1513,11 +1514,11 @@ TEST(InMemoryTransactionRollback, DeleteFromRowBasicFunction) {
                        .ok());
 }
 
-/*TEST(PersistentTransactionRollback, DeleteFromRowBasicFunction) {
+TEST(PersistentTransactionRollback, DeleteFromRowBasicFunction) {
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1562,8 +1563,8 @@ column_family_name, row_key));
   ASSERT_EQ(false, HasPersistentColumn(table, second_column_family_name,
 row_key, column_qualifier) .ok());
 
-DeletePersistentDB();
-}*/
+  std::filesystem::remove_all("/tmp/mutation_projects");
+}
 
 // Does AddToCell reject requests to add to a cell in a column family
 // not provisioned for aggregation?
@@ -1572,7 +1573,7 @@ TEST(InMemoryTransactionRollback,
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1611,7 +1612,7 @@ TEST(PersistentTransactionRollback,
   ::google::bigtable::admin::v2::Table schema;
   ::google::bigtable::admin::v2::ColumnFamily column_family;
 
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1645,12 +1646,12 @@ TEST(PersistentTransactionRollback,
   // would need to be set to `Aggregate'.
   ASSERT_NE(Status(), table->MutateRow(mutation_request));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test basic functionality of AddToCell Sum aggregation.
 TEST(InMemoryTransactionRollback, AddToCellTestSum) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1712,7 +1713,7 @@ TEST(InMemoryTransactionRollback, AddToCellTestSum) {
 }
 
 TEST(PersistentTransactionRollback, AddToCellTestSum) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1769,12 +1770,12 @@ TEST(PersistentTransactionRollback, AddToCellTestSum) {
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(250)));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test basic functionality of AddToCell Max aggregation.
 TEST(InMemoryTransactionRollback, AddToCellTestMax) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1823,7 +1824,7 @@ TEST(InMemoryTransactionRollback, AddToCellTestMax) {
 }
 
 TEST(PersistentTransactionRollback, AddToCellTestMax) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1870,12 +1871,12 @@ TEST(PersistentTransactionRollback, AddToCellTestMax) {
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(200)));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test basic functionality of AddToCell Min aggregation.
 TEST(InMemoryTransactionRollback, AddToCellTestMin) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1926,7 +1927,7 @@ TEST(InMemoryTransactionRollback, AddToCellTestMin) {
 }
 
 TEST(PersistentTransactionRollback, AddToCellTestMin) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
   auto const* const row_key = "0";
   auto const* const column_family_name = "column_family_1";
   auto const* const column_qualifier = "column_qualifier";
@@ -1973,7 +1974,7 @@ TEST(PersistentTransactionRollback, AddToCellTestMin) {
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(50)));
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that ReadModifyWrite does the correct thing when the row
@@ -1981,7 +1982,7 @@ TEST(PersistentTransactionRollback, AddToCellTestMin) {
 // timestamp of current system time and assume the missing values are
 // 0 or an empty string).
 TEST(InMemoryReadModifyWrite, Unsetcase) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, false);
@@ -1990,7 +1991,7 @@ TEST(InMemoryReadModifyWrite, Unsetcase) {
   auto& table = maybe_table.value();
 
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2060,7 +2061,7 @@ TEST(InMemoryReadModifyWrite, Unsetcase) {
 }
 
 TEST(PersistentReadModifyWrite, Unsetcase) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, true);
@@ -2069,7 +2070,7 @@ TEST(PersistentReadModifyWrite, Unsetcase) {
   auto& table = maybe_table.value();
 
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2138,7 +2139,7 @@ TEST(PersistentReadModifyWrite, Unsetcase) {
   ASSERT_GE(cell_it->first, system_time_ms_before);
   ASSERT_EQ(cell_it->second, "a string");
 
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2147,7 +2148,7 @@ TEST(PersistentReadModifyWrite, Unsetcase) {
 // new cell). This also tests that the RPC chooses the latest cell to
 // update (and will catch bugs in cell ordering).
 TEST(InMemoryReadModifyWrite, SetAndNewerTimestampCase) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, false);
@@ -2184,7 +2185,7 @@ TEST(InMemoryReadModifyWrite, SetAndNewerTimestampCase) {
   ASSERT_STATUS_OK(status);
 
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2242,7 +2243,7 @@ TEST(InMemoryReadModifyWrite, SetAndNewerTimestampCase) {
 }
 
 TEST(PersistentReadModifyWrite, SetAndNewerTimestampCase) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, true);
@@ -2279,7 +2280,7 @@ TEST(PersistentReadModifyWrite, SetAndNewerTimestampCase) {
   ASSERT_STATUS_OK(status);
 
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2335,7 +2336,7 @@ TEST(PersistentReadModifyWrite, SetAndNewerTimestampCase) {
                                      far_future_us_latest,
                                      ::google::cloud::internal::EncodeBigEndian(
                                          static_cast<std::int64_t>(201))));
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2343,7 +2344,7 @@ TEST(PersistentReadModifyWrite, SetAndNewerTimestampCase) {
 // new cell with the current system time should be added to the cell
 // to contain the value after adding or appending.
 TEST(InMemoryReadModifyWrite, SetAndOlderTimestampCase) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, false);
@@ -2379,7 +2380,7 @@ TEST(InMemoryReadModifyWrite, SetAndOlderTimestampCase) {
   ASSERT_STATUS_OK(status);
 
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2451,7 +2452,7 @@ TEST(InMemoryReadModifyWrite, SetAndOlderTimestampCase) {
 }
 
 TEST(PersistentReadModifyWrite, SetAndOlderTimestampCase) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, true);
@@ -2487,7 +2488,7 @@ TEST(PersistentReadModifyWrite, SetAndOlderTimestampCase) {
   ASSERT_STATUS_OK(status);
 
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2556,7 +2557,7 @@ TEST(PersistentReadModifyWrite, SetAndOlderTimestampCase) {
                                      integer_col.cells(0).timestamp_micros(),
                                      ::google::cloud::internal::EncodeBigEndian(
                                          static_cast<std::int64_t>(101))));
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2564,7 +2565,7 @@ TEST(PersistentReadModifyWrite, SetAndOlderTimestampCase) {
 // back. In particular the changes to the latest cell should be rolled
 // back.
 TEST(InMemoryReadModifyWrite, RollbackNewerTimestamp) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, false);
@@ -2596,7 +2597,7 @@ TEST(InMemoryReadModifyWrite, RollbackNewerTimestamp) {
   // refers to a column family that does not exist and should trigger
   // a rollback.
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2622,7 +2623,7 @@ TEST(InMemoryReadModifyWrite, RollbackNewerTimestamp) {
 }
 
 TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, true);
@@ -2654,7 +2655,7 @@ TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
   // refers to a column family that does not exist and should trigger
   // a rollback.
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2677,7 +2678,7 @@ TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
 
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
                                      far_future_us, "prefix"));
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Test that the RPC does the right thing when the latest cell in the
@@ -2685,7 +2686,7 @@ TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
 // back. In particular, the added cell should be deleted (no
 // additional cell should be available after the failed transaction).
 TEST(InMemoryReadModifyWrite, RollbackOlderTimestamp) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, false);
@@ -2716,7 +2717,7 @@ TEST(InMemoryReadModifyWrite, RollbackOlderTimestamp) {
   // refers to a column family that does not exist and should trigger
   // a rollback.
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2742,7 +2743,7 @@ TEST(InMemoryReadModifyWrite, RollbackOlderTimestamp) {
 }
 
 TEST(PersistentReadModifyWrite, RollbackOlderTimestamp) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
   auto maybe_table = CreateTable(table_name, column_families, true);
@@ -2773,7 +2774,7 @@ TEST(PersistentReadModifyWrite, RollbackOlderTimestamp) {
   // refers to a column family that does not exist and should trigger
   // a rollback.
   auto constexpr kRMWText = R"pb(
-    table_name: "projects/test/instances/test/tables/test"
+    table_name: "mutation_projects/test/instances/test/tables/test"
     row_key: "0"
     rules:
     [ {
@@ -2796,7 +2797,7 @@ TEST(PersistentReadModifyWrite, RollbackOlderTimestamp) {
 
   ASSERT_STATUS_OK(HasPersistentCell(table, "column_family", "0", "column_1",
                                      far_past_us, "old"));
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 }  // namespace emulator

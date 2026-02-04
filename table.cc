@@ -2026,15 +2026,105 @@ Status PersistentRowTransaction::DeleteFromColumn(
 }
 
 Status PersistentRowTransaction::DeleteFromRow() {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  bool row_existed = false;
+  std::string start_key = KeyCoder::PartialEncode(row_key_, "");
+  std::string end_key = start_key + "\xFF";
+  rocksdb::Endpoint start(start_key, false);
+  rocksdb::Endpoint end(end_key, false);
+
+  for (auto& column_family : *utilities_) {
+    rocksdb::Status status =
+        txn_->GetRangeLock(column_family.second->GetRaw(), start, end);
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to delete from row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key", row_key_));
+    }
+
+    auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+        txn_->GetIterator(rocksdb::ReadOptions(),
+                          column_family.second->GetRaw()));
+    cf_it->Seek(start_key);
+    if (!cf_it->Valid() || !cf_it->key().starts_with(start_key)) {
+      continue;
+    }
+    row_existed = true;
+
+    while (cf_it->Valid() && cf_it->key().starts_with(start_key)) {
+      status = txn_->Delete(column_family.second->GetRaw(), cf_it->key());
+      if (!status.ok()) {
+        return InternalError(
+            "Failed to delete from row: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("row key", row_key_));
+      }
+      cf_it->Next();
+    }
+  }
+
+  if (row_existed) {
+    return Status();
+  }
+
+  return NotFoundError("row not found in table",
+                       GCP_ERROR_INFO().WithMetadata("row", row_key_));
 }
 
 Status PersistentRowTransaction::DeleteFromFamily(
     ::google::bigtable::v2::Mutation_DeleteFromFamily const&
         delete_from_family) {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  auto maybe_column_family = utilities_->FindColumnFamily(delete_from_family);
+  if (!maybe_column_family.ok()) {
+    return maybe_column_family.status();
+  }
+
+  auto column_family_it = utilities_->find(delete_from_family.family_name());
+  if (column_family_it == utilities_->end()) {
+    return NotFoundError(
+        "column family not found in table",
+        GCP_ERROR_INFO().WithMetadata("column family",
+                                      delete_from_family.family_name()));
+  }
+
+  auto const& column_family = column_family_it->second;
+  std::string start_key = KeyCoder::PartialEncode(row_key_, "");
+  std::string end_key = start_key + "\xFF";
+  rocksdb::Endpoint start(start_key, false);
+  rocksdb::Endpoint end(end_key, false);
+
+  rocksdb::Status status =
+      txn_->GetRangeLock(column_family->GetRaw(), start, end);
+  if (!status.ok()) {
+    return InternalError(
+        "Failed to delete from family: " + status.ToString(),
+        GCP_ERROR_INFO()
+            .WithMetadata("row key", row_key_)
+            .WithMetadata("column family", delete_from_family.family_name()));
+  }
+
+  auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+      txn_->GetIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
+  cf_it->Seek(start_key);
+  if (!cf_it->Valid() || !cf_it->key().starts_with(start_key)) {
+    return NotFoundError(
+        "row key is not found in column family",
+        GCP_ERROR_INFO()
+            .WithMetadata("row key", row_key_)
+            .WithMetadata("column family", column_family_it->first));
+  }
+
+  while (cf_it->Valid() && cf_it->key().starts_with(start_key)) {
+    status = txn_->Delete(column_family->GetRaw(), cf_it->key());
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to delete from family: " + status.ToString(),
+          GCP_ERROR_INFO()
+              .WithMetadata("row key", row_key_)
+              .WithMetadata("column family", delete_from_family.family_name()));
+    }
+    cf_it->Next();
+  }
+
+  return Status();
 }
 
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
