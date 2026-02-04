@@ -474,6 +474,7 @@ TEST(PersistentTransactionRollback, ZeroOrNegativeTimestampHandling) {
   auto const* data = "test";
 
   std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -596,6 +597,7 @@ TEST(PersistentTransactionRollback, SetCellBasicFunction) {
   auto const* data = "test";
 
   std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -697,6 +699,7 @@ TEST(PersistentTransactionRollback, TestRestoreValue) {
   auto const* const good_mutation_data = "expected to succeed";
 
   std::vector<std::string> column_families = {valid_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -809,6 +812,7 @@ TEST(PersistentTransactionRollback, DeleteValue) {
   // name.
   auto const* const valid_column_family_name = "test";
   std::vector<std::string> column_families = {valid_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -914,6 +918,7 @@ TEST(PersistentTransactionRollback, DeleteColumn) {
   // name.
   auto const* const valid_column_family_name = "test";
   std::vector<std::string> column_families = {valid_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -1000,6 +1005,7 @@ TEST(PersistentTransactionRollback, DeleteRow) {
   // name.
   auto const* const valid_column_family_name = "test";
   std::vector<std::string> column_families = {valid_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -1074,8 +1080,6 @@ TEST(InMemoryTransactionRollback, DeleteFromFamilyBasicFunction) {
             HasInMemoryRow(table, second_column_family_name, row_key).ok());
 }
 
-// TODO: Uncomment when implemented
-/*
 TEST(PersistentTransactionRollback, DeleteFromFamilyBasicFunction) {
     ::google::bigtable::admin::v2::Table schema;
     ::google::bigtable::admin::v2::ColumnFamily column_family;
@@ -1091,6 +1095,7 @@ TEST(PersistentTransactionRollback, DeleteFromFamilyBasicFunction) {
 
     std::vector<std::string> column_families = {column_family_name,
                                                 second_column_family_name};
+    std::filesystem::remove_all("/tmp/mutation_projects");
     auto maybe_table = CreateTable(table_name, column_families, true);
 
     ASSERT_STATUS_OK(maybe_table);
@@ -1109,7 +1114,7 @@ TEST(PersistentTransactionRollback, DeleteFromFamilyBasicFunction) {
     ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, timestamp_micros, data));
     ASSERT_STATUS_OK(
-        HasInMemoryColumn(table, column_family_name, row_key,
+        HasPersistentColumn(table, column_family_name, row_key,
 column_qualifier)); ASSERT_STATUS_OK(HasPersistentRow(table, column_family_name,
 row_key));
 
@@ -1125,7 +1130,7 @@ row_key));
               HasPersistentRow(table, second_column_family_name, row_key).ok());
 
     std::filesystem::remove_all("/tmp/mutation_projects");
-}*/
+}
 
 // Test that DeleteFromfamily can be rolled back in case a subsequent
 // mutation fails.
@@ -1205,6 +1210,7 @@ TEST(PersistentTransactionRollback, DeleteFromFamilyRollback) {
       "i_do_not_exist_in_the_schema";
 
   std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -1310,6 +1316,7 @@ TEST(PersistentTransactionRollback, DeleteFromColumnBasicFunction) {
   auto const* data = "test";
 
   std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -1417,6 +1424,7 @@ TEST(PersistentTransactionRollback, DeleteFromColumnRollback) {
   auto const* data = "test";
 
   std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -1528,6 +1536,7 @@ TEST(PersistentTransactionRollback, DeleteFromRowBasicFunction) {
 
   std::vector<std::string> column_families = {column_family_name,
                                               second_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -1618,6 +1627,7 @@ TEST(PersistentTransactionRollback,
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = Table::Create(
       CreateSchema(table_name, {{column_family_name, column_family}}), true,
       "/tmp/");
@@ -1719,6 +1729,7 @@ TEST(PersistentTransactionRollback, AddToCellTestSum) {
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = Table::Create(
       CreateSchema(table_name,
                    {{column_family_name,
@@ -1830,6 +1841,7 @@ TEST(PersistentTransactionRollback, AddToCellTestMax) {
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = Table::Create(
       CreateSchema(table_name,
                    {{column_family_name,
@@ -1933,6 +1945,7 @@ TEST(PersistentTransactionRollback, AddToCellTestMin) {
   auto const* const column_qualifier = "column_qualifier";
   auto const timestamp_micros = 1000;
 
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = Table::Create(
       CreateSchema(table_name,
                    {{column_family_name,
@@ -2064,6 +2077,7 @@ TEST(PersistentReadModifyWrite, Unsetcase) {
   auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -2246,6 +2260,7 @@ TEST(PersistentReadModifyWrite, SetAndNewerTimestampCase) {
   auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -2455,6 +2470,7 @@ TEST(PersistentReadModifyWrite, SetAndOlderTimestampCase) {
   auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -2626,6 +2642,7 @@ TEST(PersistentReadModifyWrite, RollbackNewerTimestamp) {
   auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);
@@ -2746,6 +2763,7 @@ TEST(PersistentReadModifyWrite, RollbackOlderTimestamp) {
   auto const* const table_name = "mutation_projects/test/instances/test/tables/test";
 
   std::vector<std::string> column_families = {"column_family"};
+  std::filesystem::remove_all("/tmp/mutation_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
 
   ASSERT_STATUS_OK(maybe_table);

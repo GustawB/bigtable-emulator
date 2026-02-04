@@ -2050,14 +2050,19 @@ Status PersistentRowTransaction::DeleteFromRow() {
     }
     row_existed = true;
 
+    std::vector<std::string> keys_to_delete;
     while (cf_it->Valid() && cf_it->key().starts_with(start_key)) {
-      status = txn_->Delete(column_family.second->GetRaw(), cf_it->key());
+      keys_to_delete.push_back(cf_it->key().ToString());
+      cf_it->Next();
+    }
+    cf_it.reset();
+    for (auto const& key : keys_to_delete) {
+      status = txn_->Delete(column_family.second->GetRaw(), key);
       if (!status.ok()) {
         return InternalError(
             "Failed to delete from row: " + status.ToString(),
             GCP_ERROR_INFO().WithMetadata("row key", row_key_));
       }
-      cf_it->Next();
     }
   }
 
@@ -2112,8 +2117,14 @@ Status PersistentRowTransaction::DeleteFromFamily(
             .WithMetadata("column family", column_family_it->first));
   }
 
+  std::vector<std::string> keys_to_delete;
   while (cf_it->Valid() && cf_it->key().starts_with(start_key)) {
-    status = txn_->Delete(column_family->GetRaw(), cf_it->key());
+    keys_to_delete.push_back(cf_it->key().ToString());
+    cf_it->Next();
+  }
+  cf_it.reset();
+  for (auto const& key : keys_to_delete) {
+    status = txn_->Delete(column_family->GetRaw(), key);
     if (!status.ok()) {
       return InternalError(
           "Failed to delete from family: " + status.ToString(),
@@ -2121,7 +2132,6 @@ Status PersistentRowTransaction::DeleteFromFamily(
               .WithMetadata("row key", row_key_)
               .WithMetadata("column family", delete_from_family.family_name()));
     }
-    cf_it->Next();
   }
 
   return Status();
