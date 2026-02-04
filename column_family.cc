@@ -608,7 +608,7 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
 
     rocksdb::ReadOptions opts;
 
-    if (row_ranges_ && !row_ranges_->disjoint_ranges().empty()) {
+    if (!row_ranges_->disjoint_ranges().empty()) {
       // Limit the scan to the smallest range
       // that covers all specified row ranges
       auto const& ranges = row_ranges_->disjoint_ranges();
@@ -633,9 +633,11 @@ void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
           db_->NewIterator(opts, handle_.get()));
       it_->Seek(lowerbound_key_);
     } else {
+      // No row ranges given, empty stream
       it_ = std::unique_ptr<rocksdb::Iterator>(
           db_->NewIterator(opts, handle_.get()));
-      it_->SeekToFirst();
+      it_->SeekToLast();
+      it_->Next();
     }
 
     UpdateDecodedKey();
@@ -731,7 +733,7 @@ bool FilteredPersistentColumnFamilyStream::UpdateDecodedKey() const {
 }
 
 bool FilteredPersistentColumnFamilyStream::IsValidRow() const {
-  if (row_ranges_ && !row_ranges_->Contains(curr_decoded_key_.row)) {
+  if (!row_ranges_->Contains(curr_decoded_key_.row)) {
     return false;
   }
   for (auto const& regex : row_regexes_) {
