@@ -41,10 +41,9 @@ class KeyCoder {
 
   static StatusOr<std::string> ConsumeField(std::string_view src, size_t& pos);
 
- private:
-  static constexpr char separator_{'\x00'};
-  static constexpr char end_esc_{'\x01'};
-  static constexpr char existing_esc_{'\xFF'};
+  static constexpr char kSeparator{';'};
+  static constexpr char kEndEsc{'\x01'};
+  static constexpr char kExistingEsc{'\xFF'};
 };
 
 }  // namespace emulator

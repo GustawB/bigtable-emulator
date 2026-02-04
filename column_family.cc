@@ -22,6 +22,7 @@
 #include "filter.h"
 #include "filtered_map.h"
 #include "key_coder.h"
+#include "range_set.h"
 #include <google/bigtable/admin/v2/types.pb.h>
 #include <google/bigtable/v2/data.pb.h>
 #include <cassert>
@@ -498,20 +499,54 @@ bool FilteredInMemoryColumnFamilyStream::PointToFirstCellAfterRowChange()
   return false;
 }
 
+class FilteredPersistentColumnFamilyStream::FilterApply {
+ public:
+  explicit FilterApply(FilteredPersistentColumnFamilyStream& parent)
+      : parent_(parent) {}
+
+  bool operator()(ColumnRange const& column_range) {
+    if (column_range.column_family == parent_.column_family_name_) {
+      parent_.column_ranges_.Intersect(column_range.range);
+    }
+    return true;
+  }
+
+  bool operator()(TimestampRange const& timestamp_range) {
+    parent_.timestamp_ranges_.Intersect(timestamp_range.range);
+    return true;
+  }
+
+  bool operator()(RowKeyRegex const& row_key_regex) {
+    parent_.row_regexes_.emplace_back(row_key_regex.regex);
+    return true;
+  }
+
+  bool operator()(FamilyNameRegex const&) { return false; }
+
+  bool operator()(ColumnRegex const& column_regex) {
+    parent_.column_regexes_.emplace_back(column_regex.regex);
+    return true;
+  }
+
+ private:
+  FilteredPersistentColumnFamilyStream& parent_;
+};
+
 FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
     std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-    std::string const& column_family_name,
-    std::shared_ptr<rocksdb::TransactionDB> db,
+    std::string column_family_name, std::shared_ptr<rocksdb::TransactionDB> db,
     std::shared_ptr<StringRangeSet const> row_set)
-    : column_family_name_(column_family_name),
+    : column_family_name_(std::move(column_family_name)),
       handle_(std::move(handle)),
       db_(std::move(db)),
-      row_set_(std::move(row_set)) {}
+      row_ranges_(std::move(row_set)),
+      column_ranges_(StringRangeSet::All()),
+      timestamp_ranges_(TimestampRangeSet::All()) {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
-  // TODO: Implement
-  return false;
+  assert(!initialized_);
+  return absl::visit(FilterApply(*this), internal_filter);
 }
 
 bool FilteredPersistentColumnFamilyStream::HasValue() const {
@@ -533,51 +568,175 @@ CellView const& FilteredPersistentColumnFamilyStream::Value() const {
 bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   InitializeIfNeeded();
   cur_value_.reset();
+
+  if (!it_->Valid()) return false;
+
   if (mode == NextMode::kCell) {
     it_->Next();
   } else if (mode == NextMode::kColumn) {
-    while (it_->Valid()) {
-      auto maybe_decoded = KeyCoder::Decode(
-          std::string_view(it_->key().data(), it_->key().size()));
-      if (!maybe_decoded.ok()) {
-        return false;
-      }
-      if (maybe_decoded.value().col != curr_decoded_key_.col) {
-        break;
-      }
-      it_->Next();
-    }
+    it_->Seek(
+        KeyCoder::PartialEncode(curr_decoded_key_.row, curr_decoded_key_.col) +
+        ";\xFF");
   } else if (mode == NextMode::kRow) {
-    it_->Seek(curr_decoded_key_.row + "\xFF");
+    it_->Seek(curr_decoded_key_.row + ";\xFF");
   } else {
     return false;
   }
 
-  if (it_->Valid()) {
-    auto maybe_decoded = KeyCoder::Decode(
-        std::string_view(it_->key().data(), it_->key().size()));
-    if (!maybe_decoded.ok()) {
+  return JumpToNextValid();
+}
+
+bool FilteredPersistentColumnFamilyStream::MatchesAll(
+    absl::string_view value,
+    std::vector<std::shared_ptr<re2::RE2 const>> const& regexes) const {
+  if (regexes.empty()) return true;
+  for (auto const& re : regexes) {
+    if (!re2::RE2::PartialMatch(value, *re)) {
       return false;
     }
-    curr_decoded_key_ = maybe_decoded.value();
+  }
+  return true;
+}
+
+bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
+  auto const& r_ranges = row_ranges_->disjoint_ranges();
+  auto const& c_ranges = column_ranges_.disjoint_ranges();
+  auto const& t_ranges = timestamp_ranges_.disjoint_ranges();
+
+  while (it_->Valid()) {
+    auto decoded = KeyCoder::Decode(it_->key().ToString()).value();
+
+    if (row_filter_pos_ == r_ranges.end()) return false;
+
+    if (row_filter_pos_->IsAboveEnd(decoded.row)) {
+      ++row_filter_pos_;
+      if (row_filter_pos_ == r_ranges.end()) return false;
+      it_->Seek(row_filter_pos_->start_finite());
+      continue;
+    }
+
+    if (row_filter_pos_->IsBelowStart(decoded.row)) {
+      it_->Seek(row_filter_pos_->start_finite());
+
+      if (it_->Valid()) {
+        auto new_decoded = KeyCoder::Decode(it_->key().ToString()).value();
+        if (row_filter_pos_->IsBelowStart(new_decoded.row)) {
+          it_->Next();
+        }
+      }
+      continue;
+    }
+
+    if (decoded.row != current_row_key_tracker_) {
+
+      if (!MatchesAll(decoded.row, row_regexes_)) {
+        it_->Seek(decoded.row + ";\xFF");
+        continue;
+      }
+
+      current_row_key_tracker_ = decoded.row;
+      col_filter_pos_ = c_ranges.begin();
+      current_col_key_tracker_ = "";
+      ts_filter_pos_ = t_ranges.rbegin();
+    }
+
+    if (col_filter_pos_ == c_ranges.end()) {
+      it_->Seek(decoded.row + ";\xFF");
+      continue;
+    }
+
+    if (col_filter_pos_->IsAboveEnd(decoded.col)) {
+      ++col_filter_pos_;
+      if (col_filter_pos_ == c_ranges.end()) {
+        it_->Seek(decoded.row + ";\xFF");
+      } else {
+        it_->Seek(KeyCoder::PartialEncode(decoded.row,
+                                          col_filter_pos_->start_finite()));
+      }
+      continue;
+    }
+
+    if (col_filter_pos_->IsBelowStart(decoded.col)) {
+      it_->Seek(KeyCoder::PartialEncode(decoded.row,
+                                        col_filter_pos_->start_finite()));
+      continue;
+    }
+
+    if (decoded.col != current_col_key_tracker_) {
+      if (!MatchesAll(decoded.col, column_regexes_)) {
+        it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
+        continue;
+      }
+
+      current_col_key_tracker_ = decoded.col;
+      ts_filter_pos_ = t_ranges.rbegin();
+    }
+
+    if (ts_filter_pos_ == t_ranges.rend()) {
+      it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
+      continue;
+    }
+
+    using TimestampValue = TimestampRangeSet::Range::Value;
+
+    if (ts_filter_pos_->IsAboveEnd(TimestampValue(decoded.timestamp))) {
+      it_->Seek(KeyCoder::Encode(decoded.row, decoded.col,
+                                 ts_filter_pos_->end().count()));
+
+      if (it_->Valid()) {
+        auto new_decoded = KeyCoder::Decode(it_->key().ToString()).value();
+
+       if (new_decoded.row == decoded.row && new_decoded.col == decoded.col) {
+          if (ts_filter_pos_->IsAboveEnd(TimestampValue(new_decoded.timestamp))) {
+            it_->Next();
+          }
+       }
+      }
+      continue;
+    }
+
+    if (ts_filter_pos_->IsBelowStart(TimestampValue(decoded.timestamp))) {
+      ++ts_filter_pos_;
+
+      //if (ts_filter_pos_ == t_ranges.rend()) {
+        //it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + "\xFF");
+      //} else {
+      if (ts_filter_pos_ != t_ranges.rend()) {
+        it_->Seek(KeyCoder::Encode(decoded.row, decoded.col,
+                                   ts_filter_pos_->end().count()));
+      } else {
+        auto new_decoded = KeyCoder::Decode(it_->key().ToString()).value();
+        it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
+      }
+      //}
+      continue;
+    }
+
+    curr_decoded_key_ = decoded;
     curr_value_string_ = it_->value().ToString();
+
+    cur_value_.reset();
+    return true;
   }
   return true;
 }
 
 void FilteredPersistentColumnFamilyStream::InitializeIfNeeded() const {
-  if (!initialized_) {
-    initialized_ = true;
+  if (initialized_) return;
+  initialized_ = true;
 
-    rocksdb::ReadOptions opts;
-    it_ = std::unique_ptr<rocksdb::Iterator>(
-        db_->NewIterator(opts, handle_.get()));
-    it_->SeekToFirst();
-    if (it_->Valid()) {
-      curr_decoded_key_ = KeyCoder::Decode(it_->key().ToString()).value();
-      curr_value_string_ = it_->value().ToString();
-    }
+  rocksdb::ReadOptions opts;
+  it_.reset(db_->NewIterator(opts, handle_.get()));
+
+  auto const& ranges = row_ranges_->disjoint_ranges();
+  row_filter_pos_ = ranges.begin();
+
+  if (row_filter_pos_ == ranges.end()) {
+    return;
   }
+
+  it_->Seek(row_filter_pos_->start_finite());
+  const_cast<FilteredPersistentColumnFamilyStream*>(this)->JumpToNextValid();
 }
 
 StatusOr<std::shared_ptr<InMemoryColumnFamily>>

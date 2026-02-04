@@ -639,7 +639,7 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
  public:
   FilteredPersistentColumnFamilyStream(
       std::shared_ptr<rocksdb::ColumnFamilyHandle> handle,
-      std::string const& column_family_name,
+      std::string column_family_name,
       std::shared_ptr<rocksdb::TransactionDB> db,
       std::shared_ptr<StringRangeSet const> row_set);
   bool ApplyFilter(InternalFilter const& internal_filter) override;
@@ -649,10 +649,32 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
   std::string const& column_family_name() const { return column_family_name_; }
 
  private:
+  class FilterApply;
   void InitializeIfNeeded() const;
+
+  bool MatchesAll(absl::string_view value,
+                  std::vector<std::shared_ptr<RE2 const>> const& regexes) const;
+
+  bool JumpToNextValid();
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
+
+  std::shared_ptr<StringRangeSet const> row_ranges_;
+  mutable std::set<StringRangeSet::Range,
+                   StringRangeSet::Range::StartLess>::const_iterator
+      row_filter_pos_;
+  std::vector<std::shared_ptr<RE2 const>> row_regexes_;
+  mutable StringRangeSet column_ranges_;
+  std::set<StringRangeSet::Range,
+           StringRangeSet::Range::StartLess>::const_iterator col_filter_pos_;
+  std::vector<std::shared_ptr<RE2 const>> column_regexes_;
+  mutable TimestampRangeSet timestamp_ranges_;
+  std::set<TimestampRangeSet::Range,
+           TimestampRangeSet::Range::StartLess>::reverse_iterator
+      ts_filter_pos_;
+  std::string current_row_key_tracker_;
+  std::string current_col_key_tracker_;
 
   std::shared_ptr<rocksdb::TransactionDB> db_;
   std::shared_ptr<StringRangeSet const> row_set_;
