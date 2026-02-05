@@ -36,7 +36,7 @@ Status CompareSchemas(::google::bigtable::admin::v2::Table const& A,
                              .WithMetadata("Schema B", B.name()));
   }
 
-  for (const auto& cf : A.column_families()) {
+  for (auto const& cf : A.column_families()) {
     if (B.column_families().find(cf.first) == B.column_families().end()) {
       return NotFoundError("have different column families",
                            GCP_ERROR_INFO()
