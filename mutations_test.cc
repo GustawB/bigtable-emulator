@@ -1572,7 +1572,7 @@ column_family_name, row_key));
   ASSERT_EQ(false, HasPersistentColumn(table, second_column_family_name,
 row_key, column_qualifier) .ok());
 
-  std::filesystem::remove_all("/tmp/mutation_projects");
+std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Does AddToCell reject requests to add to a cell in a column family

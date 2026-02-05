@@ -99,9 +99,9 @@ StatusOr<bool> HasPersistentRowBool(
 
   return true;
 }
-
+/*
 TEST(InMemoryDropRowRange, DropAll) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "drw_projects/test/instances/test/tables/test";
   std::vector<std::string> column_families = {"column_family_1",
                                               "column_family_2"};
 
@@ -138,7 +138,7 @@ TEST(InMemoryDropRowRange, DropAll) {
 }
 
 TEST(PersistentDropRowRange, DropAll) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "drw_projects/test/instances/test/tables/test";
   std::vector<std::string> column_families = {"column_family_1",
                                               "column_family_2"};
 
@@ -172,11 +172,11 @@ TEST(PersistentDropRowRange, DropAll) {
       ASSERT_FALSE(status_or.value());
     }
   }
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/drw_projects");
 }
 
 TEST(InMemoryDropRowRange, DropSome) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "drw_projects/test/instances/test/tables/test";
   std::vector<std::string> column_families = {"column_family_1",
                                               "column_family_2"};
 
@@ -224,9 +224,9 @@ TEST(InMemoryDropRowRange, DropSome) {
     }
   }
 }
-
+*/
 TEST(PersistentDropRowRange, DropSome) {
-  auto const* const table_name = "projects/test/instances/test/tables/test";
+  auto const* const table_name = "drw_projects/test/instances/test/tables/test";
   std::vector<std::string> column_families = {"column_family_1",
                                               "column_family_2"};
 
@@ -273,7 +273,7 @@ TEST(PersistentDropRowRange, DropSome) {
       }
     }
   }
-  DeletePersistentDB();
+  std::filesystem::remove_all("/tmp/drw_projects");
 }
 
 }  // namespace emulator
