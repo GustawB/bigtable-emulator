@@ -2027,9 +2027,8 @@ Status PersistentRowTransaction::DeleteFromColumn(
 
 Status PersistentRowTransaction::DeleteFromRow() {
   bool row_existed = false;
-  std::string start_key = KeyCoder::PartialEncode(row_key_, "");
-  std::string end_key = start_key + "\xFF";
-  rocksdb::Endpoint start(start_key, false);
+  std::string end_key = row_key_ + "\xFF";
+  rocksdb::Endpoint start(row_key_, false);
   rocksdb::Endpoint end(end_key, false);
 
   for (auto& column_family : *utilities_) {
@@ -2044,18 +2043,17 @@ Status PersistentRowTransaction::DeleteFromRow() {
     auto cf_it = std::unique_ptr<rocksdb::Iterator>(
         txn_->GetIterator(rocksdb::ReadOptions(),
                           column_family.second->GetRaw()));
-    cf_it->Seek(start_key);
-    if (!cf_it->Valid() || !cf_it->key().starts_with(start_key)) {
+    cf_it->Seek(row_key_);
+    if (!cf_it->Valid() || !cf_it->key().starts_with(row_key_)) {
       continue;
     }
     row_existed = true;
 
     std::vector<std::string> keys_to_delete;
-    while (cf_it->Valid() && cf_it->key().starts_with(start_key)) {
+    while (cf_it->Valid() && cf_it->key().starts_with(row_key_)) {
       keys_to_delete.push_back(cf_it->key().ToString());
       cf_it->Next();
     }
-    cf_it.reset();
     for (auto const& key : keys_to_delete) {
       status = txn_->Delete(column_family.second->GetRaw(), key);
       if (!status.ok()) {
@@ -2091,9 +2089,8 @@ Status PersistentRowTransaction::DeleteFromFamily(
   }
 
   auto const& column_family = column_family_it->second;
-  std::string start_key = KeyCoder::PartialEncode(row_key_, "");
-  std::string end_key = start_key + "\xFF";
-  rocksdb::Endpoint start(start_key, false);
+  std::string end_key = row_key_ + "\xFF";
+  rocksdb::Endpoint start(row_key_, false);
   rocksdb::Endpoint end(end_key, false);
 
   rocksdb::Status status =
@@ -2108,8 +2105,8 @@ Status PersistentRowTransaction::DeleteFromFamily(
 
   auto cf_it = std::unique_ptr<rocksdb::Iterator>(
       txn_->GetIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
-  cf_it->Seek(start_key);
-  if (!cf_it->Valid() || !cf_it->key().starts_with(start_key)) {
+  cf_it->Seek(row_key_);
+  if (!cf_it->Valid() || !cf_it->key().starts_with(row_key_)) {
     return NotFoundError(
         "row key is not found in column family",
         GCP_ERROR_INFO()
@@ -2118,11 +2115,10 @@ Status PersistentRowTransaction::DeleteFromFamily(
   }
 
   std::vector<std::string> keys_to_delete;
-  while (cf_it->Valid() && cf_it->key().starts_with(start_key)) {
+  while (cf_it->Valid() && cf_it->key().starts_with(row_key_)) {
     keys_to_delete.push_back(cf_it->key().ToString());
     cf_it->Next();
   }
-  cf_it.reset();
   for (auto const& key : keys_to_delete) {
     status = txn_->Delete(column_family->GetRaw(), key);
     if (!status.ok()) {
