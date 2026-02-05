@@ -2061,15 +2061,111 @@ Status PersistentRowTransaction::DeleteFromColumn(
 }
 
 Status PersistentRowTransaction::DeleteFromRow() {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  bool row_existed = false;
+  std::string end_key = row_key_ + "\xFF";
+  rocksdb::Endpoint start(row_key_, false);
+  rocksdb::Endpoint end(end_key, false);
+
+  for (auto& column_family : *utilities_) {
+    rocksdb::Status status =
+        txn_->GetRangeLock(column_family.second->GetRaw(), start, end);
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to delete from row: " + status.ToString(),
+          GCP_ERROR_INFO().WithMetadata("row key", row_key_));
+    }
+
+    auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+        txn_->GetIterator(rocksdb::ReadOptions(),
+                          column_family.second->GetRaw()));
+    cf_it->Seek(row_key_);
+    if (!cf_it->Valid() || !cf_it->key().starts_with(row_key_)) {
+      continue;
+    }
+    row_existed = true;
+
+    std::vector<std::string> keys_to_delete;
+    while (cf_it->Valid() && cf_it->key().starts_with(row_key_)) {
+      keys_to_delete.push_back(cf_it->key().ToString());
+      cf_it->Next();
+    }
+    for (auto const& key : keys_to_delete) {
+      status = txn_->Delete(column_family.second->GetRaw(), key);
+      if (!status.ok()) {
+        return InternalError(
+            "Failed to delete from row: " + status.ToString(),
+            GCP_ERROR_INFO().WithMetadata("row key", row_key_));
+      }
+    }
+  }
+
+  if (row_existed) {
+    return Status();
+  }
+
+  return NotFoundError("row not found in table",
+                       GCP_ERROR_INFO().WithMetadata("row", row_key_));
 }
 
 Status PersistentRowTransaction::DeleteFromFamily(
     ::google::bigtable::v2::Mutation_DeleteFromFamily const&
         delete_from_family) {
-  // TODO: Implement
-  return InternalError("UNIMPLEMENTED", GCP_ERROR_INFO());
+  auto maybe_column_family = utilities_->FindColumnFamily(delete_from_family);
+  if (!maybe_column_family.ok()) {
+    return maybe_column_family.status();
+  }
+
+  auto column_family_it = utilities_->find(delete_from_family.family_name());
+  if (column_family_it == utilities_->end()) {
+    return NotFoundError(
+        "column family not found in table",
+        GCP_ERROR_INFO().WithMetadata("column family",
+                                      delete_from_family.family_name()));
+  }
+
+  auto const& column_family = column_family_it->second;
+  std::string end_key = row_key_ + "\xFF";
+  rocksdb::Endpoint start(row_key_, false);
+  rocksdb::Endpoint end(end_key, false);
+
+  rocksdb::Status status =
+      txn_->GetRangeLock(column_family->GetRaw(), start, end);
+  if (!status.ok()) {
+    return InternalError(
+        "Failed to delete from family: " + status.ToString(),
+        GCP_ERROR_INFO()
+            .WithMetadata("row key", row_key_)
+            .WithMetadata("column family", delete_from_family.family_name()));
+  }
+
+  auto cf_it = std::unique_ptr<rocksdb::Iterator>(
+      txn_->GetIterator(rocksdb::ReadOptions(), column_family->GetRaw()));
+  cf_it->Seek(row_key_);
+  if (!cf_it->Valid() || !cf_it->key().starts_with(row_key_)) {
+    return NotFoundError(
+        "row key is not found in column family",
+        GCP_ERROR_INFO()
+            .WithMetadata("row key", row_key_)
+            .WithMetadata("column family", column_family_it->first));
+  }
+
+  std::vector<std::string> keys_to_delete;
+  while (cf_it->Valid() && cf_it->key().starts_with(row_key_)) {
+    keys_to_delete.push_back(cf_it->key().ToString());
+    cf_it->Next();
+  }
+  for (auto const& key : keys_to_delete) {
+    status = txn_->Delete(column_family->GetRaw(), key);
+    if (!status.ok()) {
+      return InternalError(
+          "Failed to delete from family: " + status.ToString(),
+          GCP_ERROR_INFO()
+              .WithMetadata("row key", row_key_)
+              .WithMetadata("column family", delete_from_family.family_name()));
+    }
+  }
+
+  return Status();
 }
 
 StatusOr<::google::bigtable::v2::ReadModifyWriteRowResponse>
