@@ -68,6 +68,10 @@ FamiliesToReadModifyWriteResponse(
     std::string const& row_key,
     std::map<std::string, InMemoryColumnFamily> const& families);
 
+/**
+ * This class encapsulates implementation-specific details of a table,
+ * such as creating cell streams, locking etc.
+ */
 class TableOperations {
  public:
   virtual ~TableOperations() = default;

@@ -22,6 +22,7 @@
 #include "column_family.h"
 #include "filter.h"
 #include "google/protobuf/util/field_mask_util.h"
+#include "key_coder.h"
 #include "limits.h"
 #include "range_set.h"
 #include "re2/re2.h"
@@ -276,6 +277,7 @@ StatusOr<btadmin::Table> ApplyModifyColumnFamiliesToSchemaOnly(
   return schema;
 }
 
+constexpr auto kRangeEnd = KeyCoder::kExistingEsc;
 }  // anonymous namespace
 
 StatusOr<std::shared_ptr<TableOperations>> InMemoryTableOperations::Create(
@@ -443,7 +445,6 @@ InMemoryTableOperations::ModifyColumnFamilies(
 StatusOr<std::shared_ptr<TableOperations>> PersistentTableOperations::CreateNew(
     std::string const& data_root, google::bigtable::admin::v2::Table& schema) {
   std::string rel = schema.name();
-  if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
   std::filesystem::path db_path = std::filesystem::path(data_root) / rel;
   std::filesystem::path parent_path = db_path.parent_path();
 
@@ -576,7 +577,6 @@ PersistentTableOperations::OpenExisting(
   bool const create_if_missing = false;
 
   std::string rel = schema.name();
-  if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
   std::filesystem::path db_path = std::filesystem::path(data_root) / rel;
   std::filesystem::path parent_path = db_path.parent_path();
 
@@ -665,7 +665,6 @@ PersistentTableOperations::OpenExisting(
       res->column_families_.emplace(cfd.first, new_cf.value());
       handles_by_name[cfd.first] = new_cf.value()->GetHandle();
     } else {
-      // TODO: handle ops
       rocksdb::ColumnFamilyOptions opts;
       auto maybe_new_cf =
           PersistentColumnFamily::Create(res->db_, opts, cfd.first);
@@ -753,7 +752,7 @@ Status PersistentTableOperations::RemoveAllDataFromColumnFamilies() {
 
 Status PersistentTableOperations::DropRowRange(
     std::string const& row_key_prefix) {
-  std::string range_end = row_key_prefix + "\xFF";
+  std::string range_end = row_key_prefix + kRangeEnd;
   auto txn = std::unique_ptr<rocksdb::Transaction>(
       db_->BeginTransaction(rocksdb::WriteOptions()));
   rocksdb::Endpoint start(row_key_prefix, false);
@@ -1365,8 +1364,8 @@ bool FilteredPersistentTableStream::ApplyFilter(
   // internal_filter is either FamilyNameRegex or ColumnRange
   for (auto stream_it = unfinished_streams_.begin();
        stream_it != unfinished_streams_.end();) {
-    auto* cf_stream =
-        static_cast<FilteredPersistentColumnFamilyStream*>(&(*stream_it)->impl());
+    auto* cf_stream = static_cast<FilteredPersistentColumnFamilyStream*>(
+        &(*stream_it)->impl());
     assert(cf_stream);
 
     if ((absl::holds_alternative<FamilyNameRegex>(internal_filter) &&
@@ -1474,7 +1473,6 @@ Table::CheckAndMutateRow(
   return success_response;
 }
 
-// TODO: Filters for Persistency
 Status Table::ReadRows(google::bigtable::v2::ReadRowsRequest const& request,
                        RowStreamer& row_streamer) const {
   std::shared_ptr<StringRangeSet> row_set;
@@ -1905,7 +1903,7 @@ Status PersistentRowTransaction::AddToCell(
 
   std::string start_key = KeyCoder::PartialEncode(
       row_key_, add_to_cell.column_qualifier().raw_value());
-  std::string end_key = start_key + "\xFF";
+  std::string end_key = start_key + kRangeEnd;
   rocksdb::Endpoint start(start_key, false);
   rocksdb::Endpoint end(end_key, false);
 
@@ -2035,7 +2033,7 @@ Status PersistentRowTransaction::DeleteFromColumn(
     starts.push_back(start_key);
     ends.push_back(end_key);
 
-    cf_it->Seek(decoded.row + "\xFF");
+    cf_it->Seek(decoded.row + kRangeEnd);
   }
 
   // 2. Now that things to delete are locked, we can delete them
@@ -2062,7 +2060,7 @@ Status PersistentRowTransaction::DeleteFromColumn(
 
 Status PersistentRowTransaction::DeleteFromRow() {
   bool row_existed = false;
-  std::string end_key = row_key_ + "\xFF";
+  std::string end_key = row_key_ + kRangeEnd;
   rocksdb::Endpoint start(row_key_, false);
   rocksdb::Endpoint end(end_key, false);
 
@@ -2070,14 +2068,12 @@ Status PersistentRowTransaction::DeleteFromRow() {
     rocksdb::Status status =
         txn_->GetRangeLock(column_family.second->GetRaw(), start, end);
     if (!status.ok()) {
-      return InternalError(
-          "Failed to delete from row: " + status.ToString(),
-          GCP_ERROR_INFO().WithMetadata("row key", row_key_));
+      return InternalError("Failed to delete from row: " + status.ToString(),
+                           GCP_ERROR_INFO().WithMetadata("row key", row_key_));
     }
 
-    auto cf_it = std::unique_ptr<rocksdb::Iterator>(
-        txn_->GetIterator(rocksdb::ReadOptions(),
-                          column_family.second->GetRaw()));
+    auto cf_it = std::unique_ptr<rocksdb::Iterator>(txn_->GetIterator(
+        rocksdb::ReadOptions(), column_family.second->GetRaw()));
     cf_it->Seek(row_key_);
     if (!cf_it->Valid() || !cf_it->key().starts_with(row_key_)) {
       continue;
@@ -2124,7 +2120,7 @@ Status PersistentRowTransaction::DeleteFromFamily(
   }
 
   auto const& column_family = column_family_it->second;
-  std::string end_key = row_key_ + "\xFF";
+  std::string end_key = row_key_ + kRangeEnd;
   rocksdb::Endpoint start(row_key_, false);
   rocksdb::Endpoint end(end_key, false);
 
@@ -2202,7 +2198,7 @@ PersistentRowTransaction::ReadModifyWriteRow(
 
     // 1. Lock the key range
     rocksdb::Endpoint start(partial_key, false);
-    rocksdb::Endpoint end(partial_key + "\xFF", false);
+    rocksdb::Endpoint end(partial_key + kRangeEnd, false);
     rocksdb::Status status =
         txn_->GetRangeLock(column_family->GetRaw(), start, end);
     if (!status.ok()) {
@@ -2327,12 +2323,6 @@ PersistentRowTransaction::ReadModifyWriteRow(
         std::move(value));
   }
 
-  rocksdb::Status commit_status = txn_->Commit();
-  if (!commit_status.ok()) {
-    return InternalError(
-        "Failed to read modify row: " + commit_status.ToString(),
-        GCP_ERROR_INFO());
-  }
   return FamiliesToReadModifyWriteResponse(row_key_, tmp_families);
 }
 

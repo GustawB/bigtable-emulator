@@ -37,7 +37,7 @@ class FilteredStreamTest : public ::testing::Test {
   void SetUp() override {
     auto unit_test = ::testing::UnitTest::GetInstance();
     table_path_ = std::string("/tmp/filter_projects/") +
-                  unit_test->current_test_info()->test_case_name() + "_" +
+                  unit_test->current_test_info()->test_suite_name() + "_" +
                   unit_test->current_test_info()->name();
 
     std::filesystem::remove_all(table_path_);  // Clean start
@@ -103,14 +103,17 @@ class FilteredStreamTest : public ::testing::Test {
       std::shared_ptr<TimestampRangeSet> const& filter) {
     std::vector<std::chrono::milliseconds> result_data;
 
-    auto stream =
-        FilteredPersistentColumnFamilyStream(cf_, cf_name_, db_, std::make_shared<StringRangeSet>(StringRangeSet::All()));
+    auto stream = FilteredPersistentColumnFamilyStream(
+        cf_, cf_name_, db_,
+        std::make_shared<StringRangeSet>(StringRangeSet::All()));
 
     for (auto r : filter->disjoint_ranges()) {
       stream.ApplyFilter(InternalFilter(TimestampRange{.range = r}));
     }
     if (filter->disjoint_ranges().empty()) {
-      stream.ApplyFilter(InternalFilter(TimestampRange{.range = TimestampRangeSet::Range(std::chrono::milliseconds(1), std::chrono::milliseconds(1))}));
+      stream.ApplyFilter(InternalFilter(TimestampRange{
+          .range = TimestampRangeSet::Range(std::chrono::milliseconds(1),
+                                            std::chrono::milliseconds(1))}));
     }
 
     while (stream.HasValue()) {
@@ -124,10 +127,11 @@ class FilteredStreamTest : public ::testing::Test {
   std::map<std::string, std::string> RunStream(
       std::vector<std::shared_ptr<re2::RE2>> const& patterns) {
     std::map<std::string, std::string> result_data;
-    auto stream =
-        FilteredPersistentColumnFamilyStream(cf_, cf_name_, db_, std::make_shared<StringRangeSet>(StringRangeSet::All()));
+    auto stream = FilteredPersistentColumnFamilyStream(
+        cf_, cf_name_, db_,
+        std::make_shared<StringRangeSet>(StringRangeSet::All()));
 
-    for (const auto& p : patterns) {
+    for (auto const& p : patterns) {
       stream.ApplyFilter(InternalFilter(RowKeyRegex{.regex = p}));
     }
 
@@ -317,7 +321,8 @@ TEST_F(FilteredStreamTest, InfiniteTimestampRange) {
   auto ts_set = std::make_shared<TimestampRangeSet>(TimestampRangeSet::Empty());
   ts_set->Sum(TimestampRangeSet::Range(1_ms, 0_ms));
   auto result = RunStream(ts_set);
-  ASSERT_EQ(std::vector<std::chrono::milliseconds>({4_ms, 3_ms, 2_ms, 1_ms}), result);
+  ASSERT_EQ(std::vector<std::chrono::milliseconds>({4_ms, 3_ms, 2_ms, 1_ms}),
+            result);
 }
 
 TEST_F(FilteredStreamTest, MultipleJointTimestampFilters) {
@@ -335,17 +340,18 @@ TEST_F(FilteredStreamTest, MultipleJointTimestampFilters) {
   ts_set->Sum(TimestampRangeSet::Range(5_ms, 8_ms));
 
   auto result = RunStream(ts_set);
-  ASSERT_EQ(std::vector<std::chrono::milliseconds>({7_ms, 6_ms, 5_ms,
-                                                    4_ms, 3_ms, 2_ms, 1_ms}), result);
+  ASSERT_EQ(std::vector<std::chrono::milliseconds>(
+                {7_ms, 6_ms, 5_ms, 4_ms, 3_ms, 2_ms, 1_ms}),
+            result);
 }
 
-  TEST_F(FilteredStreamTest, MultipleDisjointTimestampFilters) {
+TEST_F(FilteredStreamTest, MultipleDisjointTimestampFilters) {
   std::map<std::chrono::milliseconds, std::string, std::greater<>> unfiltered{
-        {0_ms, "0"},  {1_ms, "0"},  {2_ms, "0"},  {3_ms, "0"},
-        {4_ms, "0"},  {5_ms, "0"},  {6_ms, "0"},  {7_ms, "0"},
-        {8_ms, "0"},  {9_ms, "0"},  {10_ms, "0"}, {11_ms, "0"},
-        {12_ms, "0"}, {13_ms, "0"}, {14_ms, "0"}, {15_ms, "0"},
-    };
+      {0_ms, "0"},  {1_ms, "0"},  {2_ms, "0"},  {3_ms, "0"},
+      {4_ms, "0"},  {5_ms, "0"},  {6_ms, "0"},  {7_ms, "0"},
+      {8_ms, "0"},  {9_ms, "0"},  {10_ms, "0"}, {11_ms, "0"},
+      {12_ms, "0"}, {13_ms, "0"}, {14_ms, "0"}, {15_ms, "0"},
+  };
   Populate(unfiltered);
 
   auto ts_set = std::make_shared<TimestampRangeSet>(TimestampRangeSet::Empty());
@@ -362,7 +368,8 @@ TEST_F(FilteredStreamTest, EmptyRegexFilter) {
   ASSERT_TRUE(pattern->ok());
   std::vector<std::shared_ptr<re2::RE2>> patterns({std::move(pattern)});
 
-  std::map<std::string, std::string> unfiltered{{"zero", "0"}, {"one", "1"}, {"two", "2"}};
+  std::map<std::string, std::string> unfiltered{
+      {"zero", "0"}, {"one", "1"}, {"two", "2"}};
   Populate(unfiltered);
 
   auto result = RunStream(patterns);
@@ -375,7 +382,7 @@ TEST_F(FilteredStreamTest, OneRegexFilter) {
   std::vector<std::shared_ptr<re2::RE2>> patterns({std::move(pattern)});
 
   std::map<std::string, std::string> unfiltered{
-        {"NO_MATCH", "0"}, {"match", "1"}, {"another_match", "2"}};
+      {"NO_MATCH", "0"}, {"match", "1"}, {"another_match", "2"}};
   Populate(unfiltered);
 
   auto result = RunStream(patterns);
@@ -392,12 +399,16 @@ TEST_F(FilteredStreamTest, MultipleFilters) {
   std::vector<std::shared_ptr<re2::RE2>> patterns(
       {std::move(has_a), std::move(has_b), std::move(has_c)});
 
-  std::map<std::string, std::string> unfiltered{
-        {"abc", "0"}, {"ab", "1"}, {"a", "2"}, {"QQ b QQ c QQ a QQ", "4"}, {"ac", "5"}};
+  std::map<std::string, std::string> unfiltered{{"abc", "0"},
+                                                {"ab", "1"},
+                                                {"a", "2"},
+                                                {"QQ b QQ c QQ a QQ", "4"},
+                                                {"ac", "5"}};
   Populate(unfiltered);
 
   auto result = RunStream(patterns);
-  ASSERT_EQ(std::vector<std::string>({"QQ b QQ c QQ a QQ", "abc"}), keys(result));
+  ASSERT_EQ(std::vector<std::string>({"QQ b QQ c QQ a QQ", "abc"}),
+            keys(result));
 }
 
 }  // namespace emulator

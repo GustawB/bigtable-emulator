@@ -84,8 +84,9 @@ class ServerTest : public ::testing::Test {
 };
 
 TEST_F(ServerTest, RecoverEmptyTable) {
-  auto const* const table_name_short = "recovery";
-  auto const* const table_name_long = "recovery_projects/tables/recovery";
+  std::string const table_name_short = "recovery";
+  std::string const table_name_long = "recovery_projects/tables/recovery";
+  std::filesystem::remove_all("/tmp/" + table_name_long);
   grpc::Status status;
   {
     google::bigtable::admin::v2::CreateTableRequest request;
@@ -122,8 +123,9 @@ TEST_F(ServerTest, RecoverEmptyTable) {
 }
 
 TEST_F(ServerTest, RecoverTableWithColumnFamilies) {
-  auto const* const table_name_short = "recovery";
-  auto const* const table_name_long = "recovery_projects/tables/recovery";
+  std::string const table_name_short = "recovery";
+  std::string const table_name_long = "recovery_projects/tables/recovery";
+  std::filesystem::remove_all("/tmp/" + table_name_long);
   {
     google::bigtable::admin::v2::CreateTableRequest request;
     request.set_table_id(table_name_short);
