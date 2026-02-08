@@ -38,6 +38,10 @@ namespace google {
 namespace cloud {
 namespace bigtable {
 namespace emulator {
+namespace {
+std::string const kUpperBound =
+    std::string({KeyCoder::kSeparator, KeyCoder::kExistingEsc});
+}  // anonymous namespace
 
 StatusOr<ReadModifyWriteCellResult> ColumnRow::ReadModifyWrite(
     std::int64_t inc_value) {
@@ -346,7 +350,7 @@ InMemoryColumnFamily::GetFilteredColumnFamilyStream(
 
 StatusOr<std::shared_ptr<PersistentColumnFamily>>
 PersistentColumnFamily::Create(std::shared_ptr<rocksdb::TransactionDB> db,
-                               rocksdb::ColumnFamilyOptions opts,
+                               rocksdb::ColumnFamilyOptions const& opts,
                                std::string const& name) {
   PersistentColumnFamily pcf;
   pcf.db_ = std::move(db);
@@ -540,8 +544,9 @@ FilteredPersistentColumnFamilyStream::FilteredPersistentColumnFamilyStream(
       handle_(std::move(handle)),
       db_(std::move(db)),
       row_ranges_(std::move(row_set)),
+      timestamp_ranges_(TimestampRangeSet::All()),
       column_ranges_(StringRangeSet::All()),
-      timestamp_ranges_(TimestampRangeSet::All()) {}
+      curr_decoded_key_() {}
 
 bool FilteredPersistentColumnFamilyStream::ApplyFilter(
     InternalFilter const& internal_filter) {
@@ -576,9 +581,9 @@ bool FilteredPersistentColumnFamilyStream::Next(NextMode mode) {
   } else if (mode == NextMode::kColumn) {
     it_->Seek(
         KeyCoder::PartialEncode(curr_decoded_key_.row, curr_decoded_key_.col) +
-        ";\xFF");
+        kUpperBound);
   } else if (mode == NextMode::kRow) {
-    it_->Seek(curr_decoded_key_.row + ";\xFF");
+    it_->Seek(curr_decoded_key_.row + kUpperBound);
   } else {
     return false;
   }
@@ -590,12 +595,13 @@ bool FilteredPersistentColumnFamilyStream::MatchesAll(
     absl::string_view value,
     std::vector<std::shared_ptr<re2::RE2 const>> const& regexes) const {
   if (regexes.empty()) return true;
-  for (auto const& re : regexes) {
-    if (!re2::RE2::PartialMatch(value, *re)) {
-      return false;
-    }
+  if (std::all_of(regexes.begin(), regexes.end(),
+                  [value](std::shared_ptr<RE2 const> const& re) {
+                    return re2::RE2::PartialMatch(value, *re);
+                  })) {
+    return true;
   }
-  return true;
+  return false;
 }
 
 bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
@@ -628,9 +634,8 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
     }
 
     if (decoded.row != current_row_key_tracker_) {
-
       if (!MatchesAll(decoded.row, row_regexes_)) {
-        it_->Seek(decoded.row + ";\xFF");
+        it_->Seek(decoded.row + kUpperBound);
         continue;
       }
 
@@ -641,14 +646,14 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
     }
 
     if (col_filter_pos_ == c_ranges.end()) {
-      it_->Seek(decoded.row + ";\xFF");
+      it_->Seek(decoded.row + kUpperBound);
       continue;
     }
 
     if (col_filter_pos_->IsAboveEnd(decoded.col)) {
       ++col_filter_pos_;
       if (col_filter_pos_ == c_ranges.end()) {
-        it_->Seek(decoded.row + ";\xFF");
+        it_->Seek(decoded.row + kUpperBound);
       } else {
         it_->Seek(KeyCoder::PartialEncode(decoded.row,
                                           col_filter_pos_->start_finite()));
@@ -664,7 +669,8 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
 
     if (decoded.col != current_col_key_tracker_) {
       if (!MatchesAll(decoded.col, column_regexes_)) {
-        it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
+        it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) +
+                  kUpperBound);
         continue;
       }
 
@@ -673,7 +679,8 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
     }
 
     if (ts_filter_pos_ == t_ranges.rend()) {
-      it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
+      it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) +
+                kUpperBound);
       continue;
     }
 
@@ -686,11 +693,12 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
       if (it_->Valid()) {
         auto new_decoded = KeyCoder::Decode(it_->key().ToString()).value();
 
-       if (new_decoded.row == decoded.row && new_decoded.col == decoded.col) {
-          if (ts_filter_pos_->IsAboveEnd(TimestampValue(new_decoded.timestamp))) {
+        if (new_decoded.row == decoded.row && new_decoded.col == decoded.col) {
+          if (ts_filter_pos_->IsAboveEnd(
+                  TimestampValue(new_decoded.timestamp))) {
             it_->Next();
           }
-       }
+        }
       }
       continue;
     }
@@ -703,7 +711,8 @@ bool FilteredPersistentColumnFamilyStream::JumpToNextValid() {
                                    ts_filter_pos_->end().count()));
       } else {
         auto new_decoded = KeyCoder::Decode(it_->key().ToString()).value();
-        it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) + ";\xFF");
+        it_->Seek(KeyCoder::PartialEncode(decoded.row, decoded.col) +
+                  kUpperBound);
       }
       continue;
     }

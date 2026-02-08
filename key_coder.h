@@ -36,14 +36,14 @@ class KeyCoder {
 
   static StatusOr<DecodeResult> Decode(std::string_view full_key);
 
+  static constexpr char kSeparator{';'};
+  static constexpr char kEndEsc{'\x01'};
+  static constexpr char kExistingEsc{'\xFF'};
+
  private:
   static void AppendEscaped(std::string& dest, std::string const& src);
 
   static StatusOr<std::string> ConsumeField(std::string_view src, size_t& pos);
-
-  static constexpr char kSeparator{';'};
-  static constexpr char kEndEsc{'\x01'};
-  static constexpr char kExistingEsc{'\xFF'};
 };
 
 }  // namespace emulator

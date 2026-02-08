@@ -501,7 +501,7 @@ class PersistentColumnFamily : public ColumnFamily {
   PersistentColumnFamily() = default;
   static StatusOr<std::shared_ptr<PersistentColumnFamily>> Create(
       std::shared_ptr<rocksdb::TransactionDB> db,
-      rocksdb::ColumnFamilyOptions opts, std::string const& name);
+      rocksdb::ColumnFamilyOptions const& opts, std::string const& name);
 
   static StatusOr<std::shared_ptr<PersistentColumnFamily>> OpenExisting(
       std::shared_ptr<rocksdb::TransactionDB> db,
@@ -659,30 +659,30 @@ class FilteredPersistentColumnFamilyStream : public AbstractCellStreamImpl {
 
   std::string column_family_name_;
   std::shared_ptr<rocksdb::ColumnFamilyHandle> handle_;
+  std::shared_ptr<rocksdb::TransactionDB> db_;
 
   std::shared_ptr<StringRangeSet const> row_ranges_;
-  mutable std::set<StringRangeSet::Range,
-                   StringRangeSet::Range::StartLess>::const_iterator
-      row_filter_pos_;
   std::vector<std::shared_ptr<RE2 const>> row_regexes_;
-  mutable StringRangeSet column_ranges_;
   std::set<StringRangeSet::Range,
            StringRangeSet::Range::StartLess>::const_iterator col_filter_pos_;
   std::vector<std::shared_ptr<RE2 const>> column_regexes_;
-  mutable TimestampRangeSet timestamp_ranges_;
   std::set<TimestampRangeSet::Range,
            TimestampRangeSet::Range::StartLess>::reverse_iterator
       ts_filter_pos_;
   std::string current_row_key_tracker_;
   std::string current_col_key_tracker_;
 
-  std::shared_ptr<rocksdb::TransactionDB> db_;
   std::shared_ptr<StringRangeSet const> row_set_;
   mutable bool initialized_{false};
   mutable std::unique_ptr<rocksdb::Iterator> it_;
   mutable std::string curr_value_string_;
-  mutable DecodeResult curr_decoded_key_;
   mutable absl::optional<CellView> cur_value_;
+  mutable TimestampRangeSet timestamp_ranges_;
+  mutable StringRangeSet column_ranges_;
+  mutable std::set<StringRangeSet::Range,
+                   StringRangeSet::Range::StartLess>::const_iterator
+      row_filter_pos_;
+  mutable DecodeResult curr_decoded_key_;
 };
 
 }  // namespace emulator

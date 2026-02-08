@@ -38,7 +38,6 @@ namespace cloud {
 namespace bigtable {
 namespace emulator {
 
-
 Status SetCellsInMultipleRows(
     std::shared_ptr<google::cloud::bigtable::emulator::Table> table,
     std::string const& table_name,
@@ -99,7 +98,7 @@ StatusOr<bool> HasPersistentRowBool(
 
   return true;
 }
-/*
+
 TEST(InMemoryDropRowRange, DropAll) {
   auto const* const table_name = "drw_projects/test/instances/test/tables/test";
   std::vector<std::string> column_families = {"column_family_1",
@@ -138,7 +137,8 @@ TEST(InMemoryDropRowRange, DropAll) {
 }
 
 TEST(PersistentDropRowRange, DropAll) {
-  auto const* const table_name = "drw_projects/test/instances/test/tables/test";
+  std::string const table_name = "drw_projects/test/instances/test/tables/test";
+  std::filesystem::remove_all("/tmp/" + table_name);
   std::vector<std::string> column_families = {"column_family_1",
                                               "column_family_2"};
 
@@ -224,9 +224,10 @@ TEST(InMemoryDropRowRange, DropSome) {
     }
   }
 }
-*/
+
 TEST(PersistentDropRowRange, DropSome) {
-  auto const* const table_name = "drw_projects/test/instances/test/tables/test";
+  std::string const table_name = "drw_projects/test/instances/test/tables/test";
+  std::filesystem::remove_all("/tmp/" + table_name);
   std::vector<std::string> column_families = {"column_family_1",
                                               "column_family_2"};
 
