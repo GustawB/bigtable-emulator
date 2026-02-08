@@ -14,6 +14,7 @@
 #include <grpcpp/security/credentials.h>
 #include <grpcpp/support/status.h>
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -80,6 +81,33 @@ class ServerTest : public ::testing::Test {
   std::unique_ptr<google::bigtable::admin::v2::BigtableTableAdmin::Stub>
   TableAdminClient() {
     return google::bigtable::admin::v2::BigtableTableAdmin::NewStub(channel_);
+  }
+};
+
+constexpr char const* kModifyTableName =
+    "modify_cf_projects/test/instances/test/tables/test";
+
+class PersistentModifyColumnFamiliesRecoveryTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    std::filesystem::remove_all("/tmp/modify_cf_projects");
+  }
+
+  void TearDown() override {
+    std::filesystem::remove_all("/tmp/modify_cf_projects");
+  }
+
+  StatusOr<std::shared_ptr<Table>> CreatePersistentTable(
+      std::vector<std::string> const& column_families) {
+    std::vector<std::string> cfs = column_families;
+    return CreateTable(kModifyTableName, cfs, true);
+  }
+
+  google::bigtable::admin::v2::ModifyColumnFamiliesRequest
+  MakeModifyRequest() {
+    google::bigtable::admin::v2::ModifyColumnFamiliesRequest request;
+    request.set_name(kModifyTableName);
+    return request;
   }
 };
 
@@ -247,6 +275,111 @@ TEST_F(ServerTest, RecoverTableWithColumnFamilies) {
   }
 
   std::filesystem::remove_all("/tmp/recovery_projects");
+}
+
+TEST_F(PersistentModifyColumnFamiliesRecoveryTest, SchemaPersistsAcrossReload) {
+  std::vector<std::string> initial_cfs = {"fam_initial"};
+  auto maybe_table = CreatePersistentTable(initial_cfs);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  auto request = MakeModifyRequest();
+  auto* mod1 = request.add_modifications();
+  mod1->set_id("fam_a");
+  mod1->mutable_create();
+  auto* mod2 = request.add_modifications();
+  mod2->set_id("fam_b");
+  mod2->mutable_create();
+
+  auto result = table->ModifyColumnFamilies(request);
+  ASSERT_STATUS_OK(result);
+
+  table->MarkForDeletion();
+  table.reset();
+
+  auto maybe_loaded = Table::Load(kModifyTableName, "/tmp/");
+  ASSERT_STATUS_OK(maybe_loaded);
+  auto loaded_table = maybe_loaded.value();
+
+  auto schema = loaded_table->GetSchema();
+  EXPECT_EQ(3, schema.column_families().size());
+  EXPECT_TRUE(schema.column_families().count("fam_initial"));
+  EXPECT_TRUE(schema.column_families().count("fam_a"));
+  EXPECT_TRUE(schema.column_families().count("fam_b"));
+}
+
+TEST_F(PersistentModifyColumnFamiliesRecoveryTest,
+       DataRestoredAfterModifyAndReload) {
+  std::vector<std::string> initial_cfs = {"fam_a", "fam_b"};
+  auto maybe_table = CreatePersistentTable(initial_cfs);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  std::vector<SetCellParams> cells = {
+      {"fam_a", "col1", 1000, "value_a"},
+      {"fam_b", "col1", 2000, "value_b"},
+  };
+  ASSERT_STATUS_OK(SetCells(table, kModifyTableName, "row1", cells));
+
+  auto request = MakeModifyRequest();
+  auto* mod = request.add_modifications();
+  mod->set_id("fam_c");
+  mod->mutable_create();
+
+  auto result = table->ModifyColumnFamilies(request);
+  ASSERT_STATUS_OK(result);
+
+  cells = {{"fam_c", "col1", 3000, "value_c"}};
+  ASSERT_STATUS_OK(SetCells(table, kModifyTableName, "row2", cells));
+
+  table->MarkForDeletion();
+  table.reset();
+
+  auto maybe_loaded = Table::Load(kModifyTableName, "/tmp/");
+  ASSERT_STATUS_OK(maybe_loaded);
+  auto loaded_table = maybe_loaded.value();
+
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_a", "row1", "col1", 1000, "value_a"));
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_b", "row1", "col1", 2000, "value_b"));
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_c", "row2", "col1", 3000, "value_c"));
+}
+
+TEST_F(PersistentModifyColumnFamiliesRecoveryTest,
+       DroppedColumnFamilyDataRemoved) {
+  std::vector<std::string> initial_cfs = {"fam_a", "fam_b"};
+  auto maybe_table = CreatePersistentTable(initial_cfs);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  std::vector<SetCellParams> cells = {
+      {"fam_a", "col1", 1000, "value_a"},
+      {"fam_b", "col1", 2000, "value_b"},
+  };
+  ASSERT_STATUS_OK(SetCells(table, kModifyTableName, "row1", cells));
+
+  auto request = MakeModifyRequest();
+  auto* mod = request.add_modifications();
+  mod->set_id("fam_b");
+  mod->set_drop(true);
+
+  auto result = table->ModifyColumnFamilies(request);
+  ASSERT_STATUS_OK(result);
+
+  table->MarkForDeletion();
+  table.reset();
+
+  auto maybe_loaded = Table::Load(kModifyTableName, "/tmp/");
+  ASSERT_STATUS_OK(maybe_loaded);
+  auto loaded_table = maybe_loaded.value();
+
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_a", "row1", "col1", 1000, "value_a"));
+  auto utils = std::static_pointer_cast<PersistentTableOperations>(
+      loaded_table->GetUtilities());
+  EXPECT_EQ(utils->find("fam_b"), utils->end());
 }
 
 }  // namespace
