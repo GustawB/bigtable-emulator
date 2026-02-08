@@ -14,6 +14,7 @@
 #include <grpcpp/security/credentials.h>
 #include <grpcpp/support/status.h>
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -247,6 +248,76 @@ TEST_F(ServerTest, RecoverTableWithColumnFamilies) {
   }
 
   std::filesystem::remove_all("/tmp/recovery_projects");
+}
+
+TEST(PersistenceRecovery, PersistentSetCellBasicFunction) {
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
+
+  auto const* const table_name =
+      "mutation_projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  auto const* const column_family_name = "test";
+  auto const* const column_qualifier = "test";
+  auto const timestamp_micros = 1234;
+  auto const* data = "test";
+
+  std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
+  auto maybe_table = CreateTable(table_name, column_families, true);
+
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  std::vector<SetCellParams> v;
+  SetCellParams p = {column_family_name, column_qualifier, timestamp_micros,
+                     data};
+  v.push_back(p);
+
+  auto status = SetCells(table, table_name, row_key, v);
+  ASSERT_STATUS_OK(status);
+
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+                                     column_qualifier, timestamp_micros, data));
+
+  std::filesystem::remove_all("/tmp/mutation_projects");
+}
+
+TEST(PersistenceRecovery, PersistentDeleteRowRollback) {
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
+
+  auto const* const table_name =
+      "mutation_projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  // The table will be set up with a schema with
+  // valid_column_family_name and mutations with this column family
+  // name are expected to succeed. We will simulate a transaction
+  // failure by setting some other not-pre-provisioned column family
+  // name.
+  auto const* const valid_column_family_name = "test";
+  std::vector<std::string> column_families = {valid_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
+  auto maybe_table = CreateTable(table_name, column_families, true);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  // First SetCell should succeed and introduce a new row with key
+  // "0". The second one will fail due to bad schema settings. We
+  // expect not to find the row after the row mutation call returns.
+  std::vector<SetCellParams> v = {
+      {valid_column_family_name, "test", 1000, "data"},
+      {"invalid_column_family_name", "test", 2000,
+       "more new data which should never be written"}};
+
+  auto status = SetCells(table, table_name, row_key, v);
+  ASSERT_NE(status.ok(), true);  // We expect the chain of mutations to
+                                 // fail altogether because the last one must fail.
+
+  status = HasPersistentRow(table, valid_column_family_name, row_key);
+  ASSERT_NE(status.ok(), true);
+
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 }  // namespace
