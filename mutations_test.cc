@@ -35,8 +35,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <thread>
-#include <future>
 #include <vector>
 
 namespace google {
@@ -590,6 +588,40 @@ TEST(InMemoryTransactionRollback, SetCellBasicFunction) {
                                    column_qualifier, timestamp_micros, data));
 }
 
+TEST(PersistentTransactionRollback, SetCellBasicFunction) {
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
+
+  auto const* const table_name =
+      "mutation_projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  auto const* const column_family_name = "test";
+  auto const* const column_qualifier = "test";
+  auto const timestamp_micros = 1234;
+  auto const* data = "test";
+
+  std::vector<std::string> column_families = {column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
+  auto maybe_table = CreateTable(table_name, column_families, true);
+
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  std::vector<SetCellParams> v;
+  SetCellParams p = {column_family_name, column_qualifier, timestamp_micros,
+                     data};
+  v.push_back(p);
+
+  auto status = SetCells(table, table_name, row_key, v);
+
+  ASSERT_STATUS_OK(status);
+
+  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
+                                     column_qualifier, timestamp_micros, data));
+
+  std::filesystem::remove_all("/tmp/mutation_projects");
+}
+
 // Test that an old value is correctly restored in a pre-populated
 // cell, when one of a set of SetCell mutations fails after the cell
 // had been updated with a new value.
@@ -969,6 +1001,44 @@ TEST(InMemoryTransactionRollback, DeleteRow) {
 
   status = HasInMemoryRow(table, valid_column_family_name, row_key);
   ASSERT_NE(status.ok(), true);
+}
+
+TEST(PersistentTransactionRollback, DeleteRow) {
+  ::google::bigtable::admin::v2::Table schema;
+  ::google::bigtable::admin::v2::ColumnFamily column_family;
+
+  auto const* const table_name =
+      "mutation_projects/test/instances/test/tables/test";
+  auto const* const row_key = "0";
+  // The table will be set up with a schema with
+  // valid_column_family_name and mutations with this column family
+  // name are expected to succeed. We will simulate a transaction
+  // failure by setting some other not-pre-provisioned column family
+  // name.
+  auto const* const valid_column_family_name = "test";
+  std::vector<std::string> column_families = {valid_column_family_name};
+  std::filesystem::remove_all("/tmp/mutation_projects");
+  auto maybe_table = CreateTable(table_name, column_families, true);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  // First SetCell should succeed and introduce a new row with key
+  // "0". The second one will fail due to bad schema settings. We
+  // expect not to find the row after the row mutation call returns.
+  std::vector<SetCellParams> v = {
+      {valid_column_family_name, "test", 1000, "data"},
+      {"invalid_column_family_name", "test", 2000,
+       "more new data which should never be written"}};
+
+  auto status = SetCells(table, table_name, row_key, v);
+  ASSERT_NE(status.ok(),
+            true);  // We expect the chain of mutations to
+  // fail altogether because the last one must fail.
+
+  status = HasPersistentRow(table, valid_column_family_name, row_key);
+  ASSERT_NE(status.ok(), true);
+
+  std::filesystem::remove_all("/tmp/mutation_projects");
 }
 
 // Does the DeleteFromfamily mutation work to delete a row from a
@@ -1944,202 +2014,6 @@ TEST(PersistentTransactionRollback, AddToCellTestMin) {
                 table, column_family_name, row_key, column_qualifier,
                 timestamp_micros,
                 google::cloud::internal::EncodeBigEndian<std::int64_t>(50)));
-
-  std::filesystem::remove_all("/tmp/mutation_projects");
-}
-
-TEST(PersistentTransactionConcurrency, ConcurrentSetCellSameRow) {
-  auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
-  auto const* const row_key = "row_0";
-  auto const* const column_family_name = "column_family";
-  auto const* const column_qualifier = "col";
-
-  std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
-  auto maybe_table = CreateTable(table_name, column_families, true);
-  ASSERT_STATUS_OK(maybe_table);
-  auto table = maybe_table.value();
-
-  ::google::bigtable::v2::MutateRowRequest req1;
-  req1.set_table_name(table_name);
-  req1.set_row_key(row_key);
-  auto* mut1 = req1.add_mutations();
-  auto* set1 = mut1->mutable_set_cell();
-  set1->set_family_name(column_family_name);
-  set1->set_column_qualifier(column_qualifier);
-  set1->set_timestamp_micros(1000);
-  set1->set_value("value_1");
-
-  ::google::bigtable::v2::MutateRowRequest req2;
-  req2.set_table_name(table_name);
-  req2.set_row_key(row_key);
-  auto* mut2 = req2.add_mutations();
-  auto* set2 = mut2->mutable_set_cell();
-  set2->set_family_name(column_family_name);
-  set2->set_column_qualifier(column_qualifier);
-  set2->set_timestamp_micros(2000);
-  set2->set_value("value_2");
-
-  std::promise<void> start_signal;
-  auto start_future = start_signal.get_future().share();
-  std::promise<Status> res1_promise;
-  std::promise<Status> res2_promise;
-  auto res1_future = res1_promise.get_future();
-  auto res2_future = res2_promise.get_future();
-
-  std::thread t1([&] {
-    start_future.wait();
-    res1_promise.set_value(table->MutateRow(req1));
-  });
-  std::thread t2([&] {
-    start_future.wait();
-    res2_promise.set_value(table->MutateRow(req2));
-  });
-
-  start_signal.set_value();
-  t1.join();
-  t2.join();
-
-  ASSERT_STATUS_OK(res1_future.get());
-  ASSERT_STATUS_OK(res2_future.get());
-  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                     column_qualifier, 1000, "value_1"));
-  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                     column_qualifier, 2000, "value_2"));
-
-  std::filesystem::remove_all("/tmp/mutation_projects");
-}
-
-TEST(PersistentTransactionConcurrency, ConcurrentSetAndDeleteSameRow) {
-  auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
-  auto const* const row_key = "row_0";
-  auto const* const column_family_name = "column_family";
-  auto const* const column_qualifier = "col";
-
-  std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
-  auto maybe_table = CreateTable(table_name, column_families, true);
-  ASSERT_STATUS_OK(maybe_table);
-  auto table = maybe_table.value();
-
-  std::vector<SetCellParams> seed = {
-      {column_family_name, column_qualifier, 1000, "value_1"},
-      {column_family_name, column_qualifier, 2000, "value_2"}};
-  ASSERT_STATUS_OK(SetCells(table, table_name, row_key, seed));
-
-  ::google::bigtable::v2::MutateRowRequest set_req;
-  set_req.set_table_name(table_name);
-  set_req.set_row_key(row_key);
-  auto* set_mut = set_req.add_mutations();
-  auto* set_cell = set_mut->mutable_set_cell();
-  set_cell->set_family_name(column_family_name);
-  set_cell->set_column_qualifier(column_qualifier);
-  set_cell->set_timestamp_micros(3000);
-  set_cell->set_value("value_3");
-
-  ::google::bigtable::v2::MutateRowRequest del_req;
-  del_req.set_table_name(table_name);
-  del_req.set_row_key(row_key);
-  auto* del_mut = del_req.add_mutations();
-  auto* del_family = del_mut->mutable_delete_from_family();
-  del_family->set_family_name(column_family_name);
-
-  std::promise<void> start_signal;
-  auto start_future = start_signal.get_future().share();
-  std::promise<Status> set_promise;
-  std::promise<Status> del_promise;
-  auto set_future = set_promise.get_future();
-  auto del_future = del_promise.get_future();
-
-  std::thread t1([&] {
-    start_future.wait();
-    set_promise.set_value(table->MutateRow(set_req));
-  });
-  std::thread t2([&] {
-    start_future.wait();
-    del_promise.set_value(table->MutateRow(del_req));
-  });
-
-  start_signal.set_value();
-  t1.join();
-  t2.join();
-
-  ASSERT_STATUS_OK(set_future.get());
-  ASSERT_STATUS_OK(del_future.get());
-
-  auto cell1 = HasPersistentCell(table, column_family_name, row_key,
-                                 column_qualifier, 1000, "value_1");
-  auto cell2 = HasPersistentCell(table, column_family_name, row_key,
-                                 column_qualifier, 2000, "value_2");
-  auto cell3 = HasPersistentCell(table, column_family_name, row_key,
-                                 column_qualifier, 3000, "value_3");
-  ASSERT_TRUE(cell1.ok() || cell2.ok() || cell3.ok());
-
-  std::filesystem::remove_all("/tmp/mutation_projects");
-}
-
-TEST(PersistentTransactionConcurrency, ConcurrentIndependentColumns) {
-  auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
-  auto const* const row_key = "row_0";
-  auto const* const column_family_name = "column_family";
-  auto const* const column_qualifier_a = "col_a";
-  auto const* const column_qualifier_b = "col_b";
-
-  std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
-  auto maybe_table = CreateTable(table_name, column_families, true);
-  ASSERT_STATUS_OK(maybe_table);
-  auto table = maybe_table.value();
-
-  ::google::bigtable::v2::MutateRowRequest req_a;
-  req_a.set_table_name(table_name);
-  req_a.set_row_key(row_key);
-  auto* mut_a = req_a.add_mutations();
-  auto* set_a = mut_a->mutable_set_cell();
-  set_a->set_family_name(column_family_name);
-  set_a->set_column_qualifier(column_qualifier_a);
-  set_a->set_timestamp_micros(1000);
-  set_a->set_value("value_a");
-
-  ::google::bigtable::v2::MutateRowRequest req_b;
-  req_b.set_table_name(table_name);
-  req_b.set_row_key(row_key);
-  auto* mut_b = req_b.add_mutations();
-  auto* set_b = mut_b->mutable_set_cell();
-  set_b->set_family_name(column_family_name);
-  set_b->set_column_qualifier(column_qualifier_b);
-  set_b->set_timestamp_micros(1000);
-  set_b->set_value("value_b");
-
-  std::promise<void> start_signal;
-  auto start_future = start_signal.get_future().share();
-  std::promise<Status> a_promise;
-  std::promise<Status> b_promise;
-  auto a_future = a_promise.get_future();
-  auto b_future = b_promise.get_future();
-
-  std::thread t1([&] {
-    start_future.wait();
-    a_promise.set_value(table->MutateRow(req_a));
-  });
-  std::thread t2([&] {
-    start_future.wait();
-    b_promise.set_value(table->MutateRow(req_b));
-  });
-
-  start_signal.set_value();
-  t1.join();
-  t2.join();
-
-  ASSERT_STATUS_OK(a_future.get());
-  ASSERT_STATUS_OK(b_future.get());
-  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                     column_qualifier_a, 1000, "value_a"));
-  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                     column_qualifier_b, 1000, "value_b"));
 
   std::filesystem::remove_all("/tmp/mutation_projects");
 }

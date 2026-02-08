@@ -84,6 +84,33 @@ class ServerTest : public ::testing::Test {
   }
 };
 
+constexpr char const* kModifyTableName =
+    "modify_cf_projects/test/instances/test/tables/test";
+
+class PersistentModifyColumnFamiliesRecoveryTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    std::filesystem::remove_all("/tmp/modify_cf_projects");
+  }
+
+  void TearDown() override {
+    std::filesystem::remove_all("/tmp/modify_cf_projects");
+  }
+
+  StatusOr<std::shared_ptr<Table>> CreatePersistentTable(
+      std::vector<std::string> const& column_families) {
+    std::vector<std::string> cfs = column_families;
+    return CreateTable(kModifyTableName, cfs, true);
+  }
+
+  google::bigtable::admin::v2::ModifyColumnFamiliesRequest
+  MakeModifyRequest() {
+    google::bigtable::admin::v2::ModifyColumnFamiliesRequest request;
+    request.set_name(kModifyTableName);
+    return request;
+  }
+};
+
 TEST_F(ServerTest, RecoverEmptyTable) {
   std::string const table_name_short = "recovery";
   std::string const table_name_long = "recovery_projects/tables/recovery";
@@ -250,74 +277,109 @@ TEST_F(ServerTest, RecoverTableWithColumnFamilies) {
   std::filesystem::remove_all("/tmp/recovery_projects");
 }
 
-TEST(PersistenceRecovery, PersistentSetCellBasicFunction) {
-  ::google::bigtable::admin::v2::Table schema;
-  ::google::bigtable::admin::v2::ColumnFamily column_family;
-
-  auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
-  auto const* const row_key = "0";
-  auto const* const column_family_name = "test";
-  auto const* const column_qualifier = "test";
-  auto const timestamp_micros = 1234;
-  auto const* data = "test";
-
-  std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
-  auto maybe_table = CreateTable(table_name, column_families, true);
-
+TEST_F(PersistentModifyColumnFamiliesRecoveryTest, SchemaPersistsAcrossReload) {
+  std::vector<std::string> initial_cfs = {"fam_initial"};
+  auto maybe_table = CreatePersistentTable(initial_cfs);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
 
-  std::vector<SetCellParams> v;
-  SetCellParams p = {column_family_name, column_qualifier, timestamp_micros,
-                     data};
-  v.push_back(p);
+  auto request = MakeModifyRequest();
+  auto* mod1 = request.add_modifications();
+  mod1->set_id("fam_a");
+  mod1->mutable_create();
+  auto* mod2 = request.add_modifications();
+  mod2->set_id("fam_b");
+  mod2->mutable_create();
 
-  auto status = SetCells(table, table_name, row_key, v);
-  ASSERT_STATUS_OK(status);
+  auto result = table->ModifyColumnFamilies(request);
+  ASSERT_STATUS_OK(result);
 
-  ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
-                                     column_qualifier, timestamp_micros, data));
+  table->MarkForDeletion();
+  table.reset();
 
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  auto maybe_loaded = Table::Load(kModifyTableName, "/tmp/");
+  ASSERT_STATUS_OK(maybe_loaded);
+  auto loaded_table = maybe_loaded.value();
+
+  auto schema = loaded_table->GetSchema();
+  EXPECT_EQ(3, schema.column_families().size());
+  EXPECT_TRUE(schema.column_families().count("fam_initial"));
+  EXPECT_TRUE(schema.column_families().count("fam_a"));
+  EXPECT_TRUE(schema.column_families().count("fam_b"));
 }
 
-TEST(PersistenceRecovery, PersistentDeleteRowRollback) {
-  ::google::bigtable::admin::v2::Table schema;
-  ::google::bigtable::admin::v2::ColumnFamily column_family;
-
-  auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
-  auto const* const row_key = "0";
-  // The table will be set up with a schema with
-  // valid_column_family_name and mutations with this column family
-  // name are expected to succeed. We will simulate a transaction
-  // failure by setting some other not-pre-provisioned column family
-  // name.
-  auto const* const valid_column_family_name = "test";
-  std::vector<std::string> column_families = {valid_column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
-  auto maybe_table = CreateTable(table_name, column_families, true);
+TEST_F(PersistentModifyColumnFamiliesRecoveryTest,
+       DataRestoredAfterModifyAndReload) {
+  std::vector<std::string> initial_cfs = {"fam_a", "fam_b"};
+  auto maybe_table = CreatePersistentTable(initial_cfs);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
 
-  // First SetCell should succeed and introduce a new row with key
-  // "0". The second one will fail due to bad schema settings. We
-  // expect not to find the row after the row mutation call returns.
-  std::vector<SetCellParams> v = {
-      {valid_column_family_name, "test", 1000, "data"},
-      {"invalid_column_family_name", "test", 2000,
-       "more new data which should never be written"}};
+  std::vector<SetCellParams> cells = {
+      {"fam_a", "col1", 1000, "value_a"},
+      {"fam_b", "col1", 2000, "value_b"},
+  };
+  ASSERT_STATUS_OK(SetCells(table, kModifyTableName, "row1", cells));
 
-  auto status = SetCells(table, table_name, row_key, v);
-  ASSERT_NE(status.ok(), true);  // We expect the chain of mutations to
-                                 // fail altogether because the last one must fail.
+  auto request = MakeModifyRequest();
+  auto* mod = request.add_modifications();
+  mod->set_id("fam_c");
+  mod->mutable_create();
 
-  status = HasPersistentRow(table, valid_column_family_name, row_key);
-  ASSERT_NE(status.ok(), true);
+  auto result = table->ModifyColumnFamilies(request);
+  ASSERT_STATUS_OK(result);
 
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  cells = {{"fam_c", "col1", 3000, "value_c"}};
+  ASSERT_STATUS_OK(SetCells(table, kModifyTableName, "row2", cells));
+
+  table->MarkForDeletion();
+  table.reset();
+
+  auto maybe_loaded = Table::Load(kModifyTableName, "/tmp/");
+  ASSERT_STATUS_OK(maybe_loaded);
+  auto loaded_table = maybe_loaded.value();
+
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_a", "row1", "col1", 1000, "value_a"));
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_b", "row1", "col1", 2000, "value_b"));
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_c", "row2", "col1", 3000, "value_c"));
+}
+
+TEST_F(PersistentModifyColumnFamiliesRecoveryTest,
+       DroppedColumnFamilyDataRemoved) {
+  std::vector<std::string> initial_cfs = {"fam_a", "fam_b"};
+  auto maybe_table = CreatePersistentTable(initial_cfs);
+  ASSERT_STATUS_OK(maybe_table);
+  auto table = maybe_table.value();
+
+  std::vector<SetCellParams> cells = {
+      {"fam_a", "col1", 1000, "value_a"},
+      {"fam_b", "col1", 2000, "value_b"},
+  };
+  ASSERT_STATUS_OK(SetCells(table, kModifyTableName, "row1", cells));
+
+  auto request = MakeModifyRequest();
+  auto* mod = request.add_modifications();
+  mod->set_id("fam_b");
+  mod->set_drop(true);
+
+  auto result = table->ModifyColumnFamilies(request);
+  ASSERT_STATUS_OK(result);
+
+  table->MarkForDeletion();
+  table.reset();
+
+  auto maybe_loaded = Table::Load(kModifyTableName, "/tmp/");
+  ASSERT_STATUS_OK(maybe_loaded);
+  auto loaded_table = maybe_loaded.value();
+
+  ASSERT_STATUS_OK(
+      HasPersistentCell(loaded_table, "fam_a", "row1", "col1", 1000, "value_a"));
+  auto utils = std::static_pointer_cast<PersistentTableOperations>(
+      loaded_table->GetUtilities());
+  EXPECT_EQ(utils->find("fam_b"), utils->end());
 }
 
 }  // namespace
