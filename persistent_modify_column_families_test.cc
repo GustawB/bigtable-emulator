@@ -18,7 +18,6 @@
 #include <google/bigtable/admin/v2/table.pb.h>
 #include <google/protobuf/field_mask.pb.h>
 #include <gtest/gtest.h>
-#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -31,17 +30,17 @@ namespace emulator {
 namespace {
 
 constexpr char const* kTableName =
-    "modify_cf_projects/test/instances/test/tables/test";
+    "persistent_modify_cf_projects/test/instances/test/tables/test";
 constexpr char const* kDataRoot = "/tmp/";
 
 class PersistentModifyColumnFamiliesTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    std::filesystem::remove_all("/tmp/modify_cf_projects");
+    std::filesystem::remove_all("/tmp/persistent_modify_cf_projects");
   }
 
   void TearDown() override {
-    std::filesystem::remove_all("/tmp/modify_cf_projects");
+    std::filesystem::remove_all("/tmp/persistent_modify_cf_projects");
   }
 
   StatusOr<std::shared_ptr<Table>> CreatePersistentTable(
@@ -62,7 +61,7 @@ TEST_F(PersistentModifyColumnFamiliesTest, CreateColumnFamily) {
   std::vector<std::string> initial_cfs = {};
   auto maybe_table = CreatePersistentTable(initial_cfs);
   ASSERT_STATUS_OK(maybe_table);
-  auto table = maybe_table.value();
+  const auto& table = maybe_table.value();
 
   auto request = MakeModifyRequest();
   auto* mod = request.add_modifications();
@@ -79,7 +78,7 @@ TEST_F(PersistentModifyColumnFamiliesTest, CreateMultipleColumnFamilies) {
   std::vector<std::string> initial_cfs = {"fam_initial"};
   auto maybe_table = CreatePersistentTable(initial_cfs);
   ASSERT_STATUS_OK(maybe_table);
-  auto table = maybe_table.value();
+  const auto& table = maybe_table.value();
 
   auto request = MakeModifyRequest();
   auto* mod1 = request.add_modifications();
@@ -105,7 +104,7 @@ TEST_F(PersistentModifyColumnFamiliesTest, DropColumnFamily) {
   std::vector<std::string> initial_cfs = {"fam_a", "fam_b", "fam_c"};
   auto maybe_table = CreatePersistentTable(initial_cfs);
   ASSERT_STATUS_OK(maybe_table);
-  auto table = maybe_table.value();
+  const auto& table = maybe_table.value();
 
   auto request = MakeModifyRequest();
   auto* mod = request.add_modifications();

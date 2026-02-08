@@ -85,16 +85,16 @@ class ServerTest : public ::testing::Test {
 };
 
 constexpr char const* kModifyTableName =
-    "modify_cf_projects/test/instances/test/tables/test";
+    "recovery_projects/test/instances/test/tables/test";
 
 class PersistentModifyColumnFamiliesRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    std::filesystem::remove_all("/tmp/modify_cf_projects");
+    std::filesystem::remove_all("/tmp/recovery_projects");
   }
 
   void TearDown() override {
-    std::filesystem::remove_all("/tmp/modify_cf_projects");
+    std::filesystem::remove_all("/tmp/recovery_projects");
   }
 
   StatusOr<std::shared_ptr<Table>> CreatePersistentTable(

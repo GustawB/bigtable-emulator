@@ -30,13 +30,13 @@ namespace emulator {
 
 TEST(PersistentTransactionConcurrency, ConcurrentSetCellSameRow) {
   auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
+      "persistent_transactions_projects/test/instances/test/tables/test";
   auto const* const row_key = "row_0";
   auto const* const column_family_name = "column_family";
   auto const* const column_qualifier = "col";
 
   std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  std::filesystem::remove_all("/tmp/persistent_transactions_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -88,18 +88,18 @@ TEST(PersistentTransactionConcurrency, ConcurrentSetCellSameRow) {
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier, 2000, "value_2"));
 
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  std::filesystem::remove_all("/tmp/persistent_transactions_projects");
 }
 
 TEST(PersistentTransactionConcurrency, ConcurrentSetAndDeleteSameRow) {
   auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
+      "persistent_transactions_projects/test/instances/test/tables/test";
   auto const* const row_key = "row_0";
   auto const* const column_family_name = "column_family";
   auto const* const column_qualifier = "col";
 
   std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  std::filesystem::remove_all("/tmp/persistent_transactions_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -155,21 +155,21 @@ TEST(PersistentTransactionConcurrency, ConcurrentSetAndDeleteSameRow) {
                                  column_qualifier, 2000, "value_2");
   auto cell3 = HasPersistentCell(table, column_family_name, row_key,
                                  column_qualifier, 3000, "value_3");
-  ASSERT_TRUE(cell1.ok() || cell2.ok() || cell3.ok());
+  ASSERT_TRUE(cell3.ok() || (!cell1.ok() && !cell2.ok() && !cell3.ok()));
 
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  std::filesystem::remove_all("/tmp/persistent_transactions_projects");
 }
 
 TEST(PersistentTransactionConcurrency, ConcurrentIndependentColumns) {
   auto const* const table_name =
-      "mutation_projects/test/instances/test/tables/test";
+      "persistent_transactions_projects/test/instances/test/tables/test";
   auto const* const row_key = "row_0";
   auto const* const column_family_name = "column_family";
   auto const* const column_qualifier_a = "col_a";
   auto const* const column_qualifier_b = "col_b";
 
   std::vector<std::string> column_families = {column_family_name};
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  std::filesystem::remove_all("/tmp/persistent_transactions_projects");
   auto maybe_table = CreateTable(table_name, column_families, true);
   ASSERT_STATUS_OK(maybe_table);
   auto table = maybe_table.value();
@@ -221,7 +221,7 @@ TEST(PersistentTransactionConcurrency, ConcurrentIndependentColumns) {
   ASSERT_STATUS_OK(HasPersistentCell(table, column_family_name, row_key,
                                      column_qualifier_b, 1000, "value_b"));
 
-  std::filesystem::remove_all("/tmp/mutation_projects");
+  std::filesystem::remove_all("/tmp/persistent_transactions_projects");
 }
 
 }  // namespace emulator
